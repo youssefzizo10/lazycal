@@ -190,7 +190,7 @@ class GoogleCalendarTUI {
       height: 2,
       flexShrink: 0,
       flexDirection: "row",
-      gap: 0,
+      gap: 1,
     })
     weekContainer.add(dayHeadersBox)
 
@@ -199,6 +199,7 @@ class GoogleCalendarTUI {
       id: "time-header",
       width: 6,
       height: 2,
+      flexShrink: 0,
       backgroundColor: COLORS.timeColumn,
       border: true,
       borderStyle: "single",
@@ -221,7 +222,6 @@ class GoogleCalendarTUI {
         border: true,
         borderStyle: isSelected || isTodayDate ? "double" : "single",
         borderColor: isSelected ? COLORS.selectedFg : isTodayDate ? COLORS.todayFg : COLORS.border,
-        margin: index < 6 ? 1 : 0,
         flexDirection: "column",
       })
 
@@ -263,8 +263,7 @@ class GoogleCalendarTUI {
         height: 3,
         flexShrink: 0,
         flexDirection: "row",
-        gap: 0,
-        marginBottom: 0,
+        gap: 1,
       })
 
       // Time label
@@ -272,6 +271,7 @@ class GoogleCalendarTUI {
         id: `time-label-${hour}`,
         width: 6,
         height: 3,
+        flexShrink: 0,
         backgroundColor: COLORS.timeColumn,
         border: true,
         borderStyle: "single",
@@ -302,7 +302,6 @@ class GoogleCalendarTUI {
           border: true,
           borderStyle: "single",
           borderColor: isSelected ? COLORS.selectedFg : COLORS.border,
-          margin: dayIndex < 6 ? 1 : 0,
           padding: 0,
         })
 
