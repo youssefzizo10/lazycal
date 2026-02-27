@@ -79,7 +79,7 @@ To use real Google Calendar data:
 | `s` | Toggle sidebar on/off |
 | `r` | Refresh events from Google Calendar |
 | `?` | Open keyboard help modal |
-| `Enter` | View selected day details (logs to console) |
+| `Click` | Open event details from the sidebar |
 | `q` / `Ctrl+C` | Quit |
 
 ## Development
