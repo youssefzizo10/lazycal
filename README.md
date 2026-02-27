@@ -1,4 +1,4 @@
-# LazyCal - Google Calendar TUI
+# LazyCal
 
 A beautiful terminal-based Google Calendar interface built with [OpenTUI](https://github.com/anomalyco/opentui).
 
@@ -6,24 +6,19 @@ A beautiful terminal-based Google Calendar interface built with [OpenTUI](https:
 
 ## Features
 
-- 📅 Full day/week/month modes
-- 📐 Responsive day columns (auto include/exclude days by terminal width)
-- 🕐 Time column always shown on the left in day/week views
-- ⌨️ Built-in command hints in header plus full keyboard help modal (`?`)
-- 📊 Side panel shows events for selected day (toggle with `s`, auto hides on narrow widths)
-- 🌐 Google Calendar API integration (optional)
-- 🎨 Color-coded events per calendar
-- ⚡ Resize-aware terminal UI
+- Full day/week/month modes
+- Responsive day columns (auto include/exclude days by terminal width)
+- Time column always shown on the left in day/week views
+- Built-in command hints in header plus full keyboard help modal (`?`)
+- Side panel shows events for selected day (toggle with `s`, auto hides on narrow widths)
+- Google Calendar API integration (optional)
+- Color-coded events per calendar
+- Resize-aware terminal UI
 
 ## Installation
 
 ```bash
-# Clone the repository
-git clone <repository-url>
-cd lazycal
-
-# Install dependencies
-bun install
+npm install lazycal
 ```
 
 ## Usage
@@ -31,10 +26,16 @@ bun install
 ### Quick Start (with sample data)
 
 ```bash
-bun run start
+npx lazycal
 ```
 
 On first launch without credentials, LazyCal offers built-in guided onboarding for Google Calendar setup. You can skip anytime and continue with sample events.
+
+You can also run with Bun directly:
+
+```bash
+bunx lazycal
+```
 
 ### Connect to Google Calendar
 
@@ -47,7 +48,7 @@ To use real Google Calendar data:
 
 2. **Create OAuth 2.0 Credentials:**
    - Go to "Credentials" in the left menu
-   - Click "Create Credentials" → "OAuth 2.0 Client ID"
+   - Click "Create Credentials" -> "OAuth 2.0 Client ID"
    - Choose "Desktop application" as the application type
    - Download the JSON credentials file
 
@@ -59,7 +60,7 @@ To use real Google Calendar data:
 
 4. **Run the app:**
    ```bash
-   bun run start
+   npx lazycal
    ```
    
    If credentials are missing, the app shows built-in onboarding steps and waits for `credentials.json`. After credentials are present, OAuth opens in your browser on first auth.
@@ -70,8 +71,8 @@ To use real Google Calendar data:
 |-----|--------|
 | `d`, `w`, `m` | Switch to day / week / month view |
 | `1`, `2`, `3` | Switch to day / week / month view |
-| `←` / `→` | Previous / next day |
-| `↑` / `↓` or `k` / `j` | Previous / next week |
+| `left` / `right` | Previous / next day |
+| `up` / `down` or `k` / `j` | Previous / next week |
 | `h` / `l` | Previous / next month |
 | `t` | Go to today |
 | `c` | Toggle calendars selector |
@@ -80,16 +81,6 @@ To use real Google Calendar data:
 | `?` | Open keyboard help modal |
 | `Enter` | View selected day details (logs to console) |
 | `q` / `Ctrl+C` | Quit |
-
-## Project Structure
-
-```
-lazycal/
-├── index.ts              # Main TUI application
-├── google-calendar.ts    # Google Calendar API integration
-├── package.json          # Project dependencies
-└── README.md            # This file
-```
 
 ## Development
 
@@ -100,12 +91,6 @@ bun run dev
 # Type checking
 bun run typecheck
 ```
-
-## Requirements
-
-- [Bun](https://bun.sh) v1.2.0+
-- [Zig](https://ziglang.org/) (for OpenTUI compilation)
-- Google Calendar API credentials (optional)
 
 ## License
 

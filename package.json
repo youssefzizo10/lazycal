@@ -1,8 +1,16 @@
 {
   "name": "lazycal",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "A beautiful terminal-based Google Calendar interface built with OpenTUI",
   "module": "index.ts",
+  "bin": {
+    "lazycal": "index.ts"
+  },
+  "files": [
+    "index.ts",
+    "google-calendar.ts",
+    "README.md"
+  ],
   "type": "module",
   "scripts": {
     "start": "bun run index.ts",

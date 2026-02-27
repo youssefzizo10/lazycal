@@ -1,3 +1,5 @@
+#!/usr/bin/env bun
+
 import {
   createCliRenderer,
   BoxRenderable,
@@ -45,6 +47,7 @@ const COLORS = {
   eventDot: "#48BB78",
   scrollBg: "#2D3748",
   scrollThumb: "#4A5568",
+  overlayBg: "#0F172A",
   synced: "#48BB78",
   offline: "#F6AD55",
   timeColumn: "#1A202C",
@@ -52,6 +55,7 @@ const COLORS = {
 
 const HOURS = Array.from({ length: 24 }, (_, i) => i)
 const TIME_COLUMN_WIDTH = 7
+const TIME_GRID_ROW_HEIGHT = 3
 const CREDENTIALS_PATH = join(homedir(), ".config", "lazycal", "credentials.json")
 
 type ViewMode = "day" | "week" | "month"
@@ -361,20 +365,9 @@ class GoogleCalendarTUI {
   }
 
   private buildCommandHint(layout: LayoutConfig): string {
-    const full =
-      "keys: d/w/m view  <- -> day  up/down week  h/l month  c calendars  s sidebar  t today  r refresh  enter details  ? help  q quit"
-    const compact = "keys: d/w/m <- -> up/down h/l c s t r ? q"
+    const full = "keys: d/w/m view  left/right day  up/down week  h/l month  t today  ? help  q quit"
+    const compact = "keys: d/w/m left/right up/down h/l t ? q"
     return this.truncate(layout.terminalWidth >= 132 ? full : compact, layout.terminalWidth - 4)
-  }
-
-  private buildCommandSubHint(layout: LayoutConfig): string {
-    let sidebarState = "sidebar:off (toggle with s)"
-    if (layout.showSidebar) {
-      sidebarState = "sidebar:on"
-    } else if (this.sidebarEnabled) {
-      sidebarState = "sidebar:hidden (narrow terminal)"
-    }
-    return this.truncate(`calendar toggle: c   sidebar toggle: s   detailed command list: ?   ${sidebarState}`, layout.terminalWidth - 4)
   }
 
   private createLayout() {
@@ -391,7 +384,7 @@ class GoogleCalendarTUI {
 
     const headerBox = new BoxRenderable(this.renderer, {
       id: "header",
-      height: 4,
+      height: 3,
       flexShrink: 0,
       flexDirection: "column",
       backgroundColor: COLORS.headerBg,
@@ -416,14 +409,6 @@ class GoogleCalendarTUI {
       alignSelf: "center",
     })
     headerBox.add(commandHint)
-
-    const commandSubHint = new TextRenderable(this.renderer, {
-      id: "header-command-subhint",
-      content: this.buildCommandSubHint(layout),
-      fg: COLORS.otherMonthFg,
-      alignSelf: "center",
-    })
-    headerBox.add(commandSubHint)
 
     const contentBox = new BoxRenderable(this.renderer, {
       id: "content",
@@ -537,7 +522,7 @@ class GoogleCalendarTUI {
     HOURS.forEach(hour => {
       const hourRow = new BoxRenderable(this.renderer, {
         id: `time-grid-hour-row-${hour}`,
-        height: 2,
+        height: TIME_GRID_ROW_HEIGHT,
         width: "100%",
         flexShrink: 0,
         flexDirection: "row",
@@ -547,7 +532,7 @@ class GoogleCalendarTUI {
       const timeLabel = new BoxRenderable(this.renderer, {
         id: `time-grid-hour-label-${hour}`,
         width: TIME_COLUMN_WIDTH,
-        height: 2,
+        height: TIME_GRID_ROW_HEIGHT,
         flexShrink: 0,
         backgroundColor: COLORS.timeColumn,
         border: true,
@@ -582,7 +567,7 @@ class GoogleCalendarTUI {
           id: `time-grid-day-cell-${hour}-${dayIndex}`,
           flexGrow: 1,
           flexBasis: 0,
-          height: 2,
+          height: TIME_GRID_ROW_HEIGHT,
           backgroundColor: selected ? COLORS.selectedBg : today ? COLORS.todayBg : weekend ? COLORS.weekendBg : COLORS.bg,
           border: true,
           borderStyle: "single",
@@ -612,7 +597,7 @@ class GoogleCalendarTUI {
     const visibleStartHour = HOURS[0] ?? 0
     const hourOffset = Math.max(0, currentHour - visibleStartHour - 1)
     setTimeout(() => {
-      hoursScroll.scrollTo({ x: 0, y: hourOffset * 2 })
+      hoursScroll.scrollTo({ x: 0, y: hourOffset * TIME_GRID_ROW_HEIGHT })
     }, 100)
   }
 
@@ -1023,7 +1008,7 @@ class GoogleCalendarTUI {
       id: "help-overlay",
       width: "100%",
       height: "100%",
-      backgroundColor: "rgba(0,0,0,0.7)",
+      backgroundColor: COLORS.overlayBg,
       position: "absolute",
       top: 0,
       left: 0,
@@ -1107,7 +1092,7 @@ class GoogleCalendarTUI {
       id: "calendar-overlay",
       width: "100%",
       height: "100%",
-      backgroundColor: "rgba(0,0,0,0.7)",
+      backgroundColor: COLORS.overlayBg,
       position: "absolute",
       top: 0,
       left: 0,
