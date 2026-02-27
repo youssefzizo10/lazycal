@@ -18,23 +18,15 @@ A beautiful terminal-based Google Calendar interface built with [OpenTUI](https:
 ## Installation
 
 ```bash
-npm install lazycal
+npm install -g lazycal
 ```
 
 ## Usage
 
-### Quick Start (with sample data)
+### Quick Start
 
 ```bash
-npx lazycal
-```
-
-On first launch without credentials, LazyCal offers built-in guided onboarding for Google Calendar setup. You can skip anytime and continue with sample events.
-
-You can also run with Bun directly:
-
-```bash
-bunx lazycal
+lazycal
 ```
 
 ### Connect to Google Calendar
@@ -60,10 +52,8 @@ To use real Google Calendar data:
 
 4. **Run the app:**
    ```bash
-   npx lazycal
+   lazycal
    ```
-   
-   If credentials are missing, the app shows built-in onboarding steps and waits for `credentials.json`. After credentials are present, OAuth opens in your browser on first auth.
 
 ## Keyboard Shortcuts
 
