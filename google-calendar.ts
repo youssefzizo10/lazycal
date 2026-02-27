@@ -189,13 +189,17 @@ export class GoogleCalendarClient {
     })
   }
 
-  async fetchEventsFromCalendars(date: Date, calendarIds: string[]): Promise<CalendarEvent[]> {
+  async fetchEventsFromCalendars(
+    date: Date,
+    calendarIds: string[],
+    range?: { start: Date; end: Date }
+  ): Promise<CalendarEvent[]> {
     if (!this.calendar) {
       throw new Error("Calendar not initialized")
     }
 
-    const timeMin = startOfWeek(date, { weekStartsOn: 0 }).toISOString()
-    const timeMax = endOfWeek(date, { weekStartsOn: 0 }).toISOString()
+    const timeMin = (range?.start || startOfWeek(date, { weekStartsOn: 0 })).toISOString()
+    const timeMax = (range?.end || endOfWeek(date, { weekStartsOn: 0 })).toISOString()
 
     const allEvents: CalendarEvent[] = []
 
@@ -222,8 +226,8 @@ export class GoogleCalendarClient {
             time: event.start?.dateTime 
               ? this.formatTime(eventDate)
               : undefined,
-            description: event.description,
-            location: event.location,
+            description: event.description || undefined,
+            location: event.location || undefined,
             calendarId: calendarId,
           })
         })

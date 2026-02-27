@@ -6,13 +6,14 @@ A beautiful terminal-based Google Calendar interface built with [OpenTUI](https:
 
 ## Features
 
-- 📅 Month view calendar with event indicators
-- 🎯 Navigate with arrow keys or vim-style (h/j/k/l)
-- 📊 Side panel shows events for selected day
+- 📅 Full day/week/month modes
+- 📐 Responsive day columns (auto include/exclude days by terminal width)
+- 🕐 Time column always shown on the left in day/week views
+- ⌨️ Built-in command hints in header plus full keyboard help modal (`?`)
+- 📊 Side panel shows events for selected day (auto hides on narrow widths)
 - 🌐 Google Calendar API integration (optional)
-- 🎨 Beautiful dark theme with color-coded events
-- ⚡ Fast and responsive terminal UI
-- 🔄 Auto-sync with Google Calendar
+- 🎨 Color-coded events per calendar
+- ⚡ Resize-aware terminal UI
 
 ## Installation
 
@@ -70,13 +71,16 @@ To use real Google Calendar data:
 
 | Key | Action |
 |-----|--------|
-| `←` / `h` | Previous month |
-| `→` / `l` | Next month |
-| `↑` / `k` | Navigate up (previous week) |
-| `↓` / `j` | Navigate down (next week) |
-| `Enter` | View day details (logs to console) |
+| `d`, `w`, `m` | Switch to day / week / month view |
+| `1`, `2`, `3` | Switch to day / week / month view |
+| `←` / `→` | Previous / next day |
+| `↑` / `↓` or `k` / `j` | Previous / next week |
+| `h` / `l` | Previous / next month |
 | `t` | Go to today |
+| `c` | Toggle calendars selector |
 | `r` | Refresh events from Google Calendar |
+| `?` | Open keyboard help modal |
+| `Enter` | View selected day details (logs to console) |
 | `q` / `Ctrl+C` | Quit |
 
 ## Project Structure

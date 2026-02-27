@@ -1,15 +1,29 @@
 import {
   createCliRenderer,
   BoxRenderable,
-  TextRenderable,
   ScrollBoxRenderable,
-  SelectRenderable,
+  TextRenderable,
   type KeyEvent,
 } from "@opentui/core"
-import { format, startOfMonth, endOfMonth, startOfWeek, endOfWeek, addDays, isSameMonth, isSameDay, addMonths, subMonths, addWeeks, subWeeks, getDay, getDate, isToday } from "date-fns"
+import {
+  addDays,
+  addMonths,
+  addWeeks,
+  differenceInCalendarDays,
+  endOfMonth,
+  endOfWeek,
+  format,
+  getDate,
+  getDay,
+  isSameDay,
+  isSameMonth,
+  isToday,
+  startOfMonth,
+  startOfWeek,
+  subMonths,
+} from "date-fns"
 import { GoogleCalendarClient, generateSampleEvents, type CalendarEvent } from "./google-calendar"
 
-// Color themes
 const COLORS = {
   bg: "#1E1E1E",
   fg: "#E2E8F0",
@@ -32,6 +46,11 @@ const COLORS = {
   timeColumn: "#1A202C",
 }
 
+const HOURS = Array.from({ length: 18 }, (_, i) => i + 6)
+const TIME_COLUMN_WIDTH = 7
+
+type ViewMode = "day" | "week" | "month"
+
 interface CalendarConfig {
   id: string
   name: string
@@ -39,29 +58,39 @@ interface CalendarConfig {
   enabled: boolean
 }
 
-const HOURS = Array.from({ length: 24 }, (_, i) => i)
+interface DateRange {
+  start: Date
+  end: Date
+}
+
+interface LayoutConfig {
+  terminalWidth: number
+  showSidebar: boolean
+  sidebarWidth: number
+  visibleDayCount: number
+}
 
 class GoogleCalendarTUI {
-  private renderer: Awaited<ReturnType<typeof createCliRenderer>>
+  private renderer!: Awaited<ReturnType<typeof createCliRenderer>>
   private currentDate: Date
   private selectedDate: Date
+  private weekStart: Date
+  private viewMode: ViewMode = "week"
   private events: CalendarEvent[]
+  private loadedRange: DateRange | null = null
   private googleClient: GoogleCalendarClient
   private isGoogleConnected = false
   private calendars: CalendarConfig[] = []
   private selectedCalendarIds: string[] = []
-  private weekStart: Date
-
-  // UI Components
   private rootBox: BoxRenderable | null = null
   private eventsScrollBox: ScrollBoxRenderable | null = null
   private eventsBox: BoxRenderable | null = null
-  private weekViewScrollBox: ScrollBoxRenderable | null = null
+  private resizeHandler: (() => void) | null = null
 
   constructor() {
     this.currentDate = new Date()
     this.selectedDate = new Date()
-    this.weekStart = startOfWeek(new Date(), { weekStartsOn: 0 })
+    this.weekStart = startOfWeek(this.selectedDate, { weekStartsOn: 0 })
     this.events = generateSampleEvents()
     this.googleClient = new GoogleCalendarClient()
   }
@@ -69,21 +98,19 @@ class GoogleCalendarTUI {
   async init() {
     console.log("Checking for Google Calendar credentials...")
     this.isGoogleConnected = await this.googleClient.initialize()
-    
+
     if (this.isGoogleConnected) {
       console.log("Connected to Google Calendar!")
-      
       const availableCalendars = await this.googleClient.listCalendars()
-      this.calendars = availableCalendars.map((cal, index) => ({
-        id: cal.id,
-        name: cal.name,
+      this.calendars = availableCalendars.map((calendar, index) => ({
+        id: calendar.id,
+        name: calendar.name,
         color: ["#4285F4", "#EA4335", "#FBBC04", "#34A853", "#9AA0A6", "#673AB7"][index % 6],
         enabled: true,
       }))
-      
-      this.selectedCalendarIds = this.calendars.map(c => c.id)
+      this.selectedCalendarIds = this.calendars.map(calendar => calendar.id)
       console.log(`Found ${this.calendars.length} calendars`)
-      this.events = await this.googleClient.fetchEventsFromCalendars(this.selectedDate, this.selectedCalendarIds)
+      await this.loadEventsIfNeeded(true)
     } else {
       console.log("Using sample data. Add credentials to use real Google Calendar.")
     }
@@ -94,17 +121,21 @@ class GoogleCalendarTUI {
     })
 
     this.renderer.setBackgroundColor(COLORS.bg)
-    this.createLayout()
     this.setupKeyboardHandling()
+    this.setupResizeHandling()
+    this.createLayout()
     this.renderer.requestRender()
   }
 
-  private getWeekDays(): Date[] {
-    const days: Date[] = []
-    for (let i = 0; i < 7; i++) {
-      days.push(addDays(this.weekStart, i))
+  private setupResizeHandling() {
+    this.resizeHandler = () => {
+      void this.refreshCalendar()
     }
-    return days
+    process.stdout.on("resize", this.resizeHandler)
+  }
+
+  private getWeekDays(): Date[] {
+    return Array.from({ length: 7 }, (_, index) => addDays(this.weekStart, index))
   }
 
   private getEventsForDate(date: Date): CalendarEvent[] {
@@ -113,15 +144,145 @@ class GoogleCalendarTUI {
 
   private getEventsForHour(date: Date, hour: number): CalendarEvent[] {
     return this.events.filter(event => {
-      if (!isSameDay(event.date, date)) return false
-      if (!event.time) return false // All-day events handled separately
-      const eventHour = parseInt(event.time.split(":")[0])
-      return eventHour === hour
+      if (!isSameDay(event.date, date) || !event.time) return false
+      const eventHour = Number.parseInt(event.time.split(":")[0] || "", 10)
+      return Number.isFinite(eventHour) && eventHour === hour
     })
   }
 
+  private getCurrentRangeForView(): DateRange {
+    if (this.viewMode === "day") {
+      const dayStart = new Date(this.selectedDate)
+      dayStart.setHours(0, 0, 0, 0)
+      const dayEnd = new Date(this.selectedDate)
+      dayEnd.setHours(23, 59, 59, 999)
+      return { start: dayStart, end: dayEnd }
+    }
+
+    if (this.viewMode === "week") {
+      const start = startOfWeek(this.selectedDate, { weekStartsOn: 0 })
+      const end = endOfWeek(this.selectedDate, { weekStartsOn: 0 })
+      return { start, end }
+    }
+
+    const monthStart = startOfMonth(this.currentDate)
+    const monthEnd = endOfMonth(this.currentDate)
+    return {
+      start: startOfWeek(monthStart, { weekStartsOn: 0 }),
+      end: endOfWeek(monthEnd, { weekStartsOn: 0 }),
+    }
+  }
+
+  private rangeContains(container: DateRange, target: DateRange): boolean {
+    return container.start.getTime() <= target.start.getTime() && container.end.getTime() >= target.end.getTime()
+  }
+
+  private async loadEventsIfNeeded(forceFetch = false) {
+    if (!this.isGoogleConnected) return
+    const requestedRange = this.getCurrentRangeForView()
+
+    if (!forceFetch && this.loadedRange && this.rangeContains(this.loadedRange, requestedRange)) {
+      return
+    }
+
+    this.events = await this.googleClient.fetchEventsFromCalendars(this.selectedDate, this.selectedCalendarIds, requestedRange)
+    this.loadedRange = requestedRange
+  }
+
+  private getSidebarWidth(terminalWidth: number): number {
+    if (terminalWidth >= 175) return 42
+    if (terminalWidth >= 145) return 36
+    if (terminalWidth >= 120) return 32
+    return 28
+  }
+
+  private calculateVisibleDayCount(terminalWidth: number, sidebarWidth: number): number {
+    if (this.viewMode === "day") return 1
+
+    const reserved = sidebarWidth > 0 ? sidebarWidth + 2 : 2
+    const gridWidth = Math.max(20, terminalWidth - reserved)
+    const baseOffset = this.viewMode === "month" ? 0 : TIME_COLUMN_WIDTH + 1
+    const minCellWidth = this.viewMode === "month" ? 10 : 11
+    const count = Math.floor((gridWidth - baseOffset) / (minCellWidth + 1))
+    return Math.max(1, Math.min(7, count))
+  }
+
+  private getLayoutConfig(): LayoutConfig {
+    const terminalWidth = Math.max(80, process.stdout.columns || 120)
+    let showSidebar = terminalWidth >= 104
+    let sidebarWidth = showSidebar ? this.getSidebarWidth(terminalWidth) : 0
+    let visibleDayCount = this.calculateVisibleDayCount(terminalWidth, sidebarWidth)
+
+    if (showSidebar && this.viewMode !== "day" && visibleDayCount < 3) {
+      showSidebar = false
+      sidebarWidth = 0
+      visibleDayCount = this.calculateVisibleDayCount(terminalWidth, 0)
+    }
+
+    return {
+      terminalWidth,
+      showSidebar,
+      sidebarWidth,
+      visibleDayCount,
+    }
+  }
+
+  private getVisibleDays(layout: LayoutConfig): Date[] {
+    if (this.viewMode === "day") return [this.selectedDate]
+
+    const weekDays = this.getWeekDays()
+    if (layout.visibleDayCount >= 7) return weekDays
+
+    const selectedIndex = Math.max(0, Math.min(6, differenceInCalendarDays(this.selectedDate, this.weekStart)))
+    const halfWindow = Math.floor((layout.visibleDayCount - 1) / 2)
+    const windowStart = Math.max(0, Math.min(selectedIndex - halfWindow, 7 - layout.visibleDayCount))
+
+    return weekDays.slice(windowStart, windowStart + layout.visibleDayCount)
+  }
+
+  private getVisibleMonthDayIndices(layout: LayoutConfig): number[] {
+    if (layout.visibleDayCount >= 7) return [0, 1, 2, 3, 4, 5, 6]
+    const selectedDow = getDay(this.selectedDate)
+    const halfWindow = Math.floor((layout.visibleDayCount - 1) / 2)
+    const start = Math.max(0, Math.min(selectedDow - halfWindow, 7 - layout.visibleDayCount))
+    return Array.from({ length: layout.visibleDayCount }, (_, i) => start + i)
+  }
+
+  private buildHeaderTitle(layout: LayoutConfig): string {
+    let dateText: string
+    if (this.viewMode === "day") {
+      dateText = format(this.selectedDate, "EEEE, MMM d, yyyy")
+    } else if (this.viewMode === "week") {
+      const weekDays = this.getWeekDays()
+      dateText = `${format(weekDays[0], "MMM d")} - ${format(weekDays[6], "MMM d, yyyy")}`
+    } else {
+      dateText = format(this.currentDate, "MMMM yyyy")
+    }
+
+    const modeText = `mode:${this.viewMode}`
+    const statusText = this.isGoogleConnected
+      ? `google:${this.calendars.filter(calendar => calendar.enabled).length}/${this.calendars.length}`
+      : "sample-data"
+
+    const widthText = this.viewMode === "day" ? "" : ` days:${layout.visibleDayCount}/7`
+    return this.truncate(`${dateText}  ${modeText}  ${statusText}${widthText}`, layout.terminalWidth - 4)
+  }
+
+  private buildCommandHint(layout: LayoutConfig): string {
+    const full =
+      "keys: d/w/m view  <- -> day  up/down week  h/l month  c calendars  t today  r refresh  enter details  ? help  q quit"
+    const compact = "keys: d/w/m <- -> up/down h/l c t r ? q"
+    return this.truncate(layout.terminalWidth >= 132 ? full : compact, layout.terminalWidth - 4)
+  }
+
+  private buildCommandSubHint(layout: LayoutConfig): string {
+    const sidebarState = layout.showSidebar ? "sidebar:on" : "sidebar:hidden (narrow terminal)"
+    return this.truncate(`calendar toggle: c   detailed command list: ?   ${sidebarState}`, layout.terminalWidth - 4)
+  }
+
   private createLayout() {
-    // Main container
+    const layout = this.getLayoutConfig()
+
     this.rootBox = new BoxRenderable(this.renderer, {
       id: "root",
       width: "100%",
@@ -131,124 +292,140 @@ class GoogleCalendarTUI {
     })
     this.renderer.root.add(this.rootBox)
 
-    // Header
     const headerBox = new BoxRenderable(this.renderer, {
       id: "header",
-      height: 3,
+      height: 4,
       flexShrink: 0,
       flexDirection: "column",
       backgroundColor: COLORS.headerBg,
-      padding: 1,
+      paddingLeft: 1,
+      paddingRight: 1,
       justifyContent: "center",
     })
     this.rootBox.add(headerBox)
 
-    // Week range display
-    const weekDays = this.getWeekDays()
-    const weekRangeText = `${format(weekDays[0], "MMM d")} - ${format(weekDays[6], "MMM d, yyyy")}`
-    const statusIcon = this.isGoogleConnected ? "●" : "○"
-    const statusText = this.isGoogleConnected 
-      ? `(${this.calendars.filter(c => c.enabled).length} calendars)` 
-      : "Sample"
-    
     const titleText = new TextRenderable(this.renderer, {
-      id: "week-title",
-      content: `${weekRangeText} ${statusIcon} ${statusText}`,
+      id: "header-title",
+      content: this.buildHeaderTitle(layout),
       fg: COLORS.headerFg,
       alignSelf: "center",
     })
     headerBox.add(titleText)
 
-    // Navigation hints - simplified
-    const hintsText = new TextRenderable(this.renderer, {
-      id: "hints",
-      content: "←→ day  ↑↓ week  h/l month  c cals  t today  ? help  q quit",
+    const commandHint = new TextRenderable(this.renderer, {
+      id: "header-command-hint",
+      content: this.buildCommandHint(layout),
       fg: COLORS.dayHeaderFg,
       alignSelf: "center",
     })
-    headerBox.add(hintsText)
+    headerBox.add(commandHint)
 
-    // Main content
+    const commandSubHint = new TextRenderable(this.renderer, {
+      id: "header-command-subhint",
+      content: this.buildCommandSubHint(layout),
+      fg: COLORS.otherMonthFg,
+      alignSelf: "center",
+    })
+    headerBox.add(commandSubHint)
+
     const contentBox = new BoxRenderable(this.renderer, {
       id: "content",
       flexGrow: 1,
       flexDirection: "row",
+      gap: 1,
+      padding: 1,
     })
     this.rootBox.add(contentBox)
 
-    // Week view container
-    const weekContainer = new BoxRenderable(this.renderer, {
-      id: "week-container",
+    const calendarContainer = new BoxRenderable(this.renderer, {
+      id: "calendar-container",
       flexGrow: 1,
       flexDirection: "column",
-      padding: 1,
+      minWidth: 30,
     })
-    contentBox.add(weekContainer)
+    contentBox.add(calendarContainer)
 
-    // Day headers
-    const dayHeadersBox = new BoxRenderable(this.renderer, {
-      id: "day-headers",
-      height: 2,
+    if (this.viewMode === "month") {
+      this.createMonthGrid(calendarContainer, layout)
+    } else {
+      this.createTimeGrid(calendarContainer, layout)
+    }
+
+    if (layout.showSidebar) {
+      this.createEventsSidebar(contentBox, layout.sidebarWidth)
+    } else {
+      this.eventsBox = null
+      this.eventsScrollBox = null
+    }
+  }
+
+  private createTimeGrid(container: BoxRenderable, layout: LayoutConfig) {
+    const visibleDays = this.getVisibleDays(layout)
+
+    const headerRow = new BoxRenderable(this.renderer, {
+      id: "time-grid-header-row",
+      height: 3,
       flexShrink: 0,
       flexDirection: "row",
       gap: 1,
+      marginBottom: 1,
     })
-    weekContainer.add(dayHeadersBox)
+    container.add(headerRow)
 
-    // Time column header (empty)
-    const timeHeaderBox = new BoxRenderable(this.renderer, {
-      id: "time-header",
-      width: 6,
-      height: 2,
+    const timeHeader = new BoxRenderable(this.renderer, {
+      id: "time-grid-header-time",
+      width: TIME_COLUMN_WIDTH,
+      height: 3,
       flexShrink: 0,
       backgroundColor: COLORS.timeColumn,
       border: true,
       borderStyle: "single",
       borderColor: COLORS.border,
+      justifyContent: "center",
+      alignItems: "center",
     })
-    dayHeadersBox.add(timeHeaderBox)
+    const timeText = new TextRenderable(this.renderer, {
+      id: "time-grid-header-time-text",
+      content: "Time",
+      fg: COLORS.otherMonthFg,
+    })
+    timeHeader.add(timeText)
+    headerRow.add(timeHeader)
 
-    // Day headers
-    const weekDays_list = this.getWeekDays()
-    weekDays_list.forEach((day, index) => {
-      const isSelected = isSameDay(day, this.selectedDate)
-      const isTodayDate = isToday(day)
-      const isWeekend = index === 0 || index === 6
-      
+    visibleDays.forEach((day, index) => {
+      const selected = isSameDay(day, this.selectedDate)
+      const today = isToday(day)
+      const weekend = getDay(day) === 0 || getDay(day) === 6
       const dayHeader = new BoxRenderable(this.renderer, {
-        id: `day-header-${index}`,
+        id: `time-grid-day-header-${index}`,
         flexGrow: 1,
         flexBasis: 0,
         height: 3,
-        backgroundColor: isSelected ? COLORS.selectedBg : isTodayDate ? COLORS.todayBg : isWeekend ? COLORS.weekendBg : COLORS.dayHeaderBg,
+        backgroundColor: selected
+          ? COLORS.selectedBg
+          : today
+            ? COLORS.todayBg
+            : weekend
+              ? COLORS.weekendBg
+              : COLORS.dayHeaderBg,
         border: true,
-        borderStyle: isSelected || isTodayDate ? "double" : "single",
-        borderColor: isSelected ? COLORS.selectedFg : isTodayDate ? COLORS.todayFg : COLORS.border,
-        flexDirection: "column",
+        borderStyle: selected || today ? "double" : "single",
+        borderColor: selected ? COLORS.selectedFg : today ? COLORS.todayFg : COLORS.border,
         justifyContent: "center",
         alignItems: "center",
       })
 
-      const dayNameText = new TextRenderable(this.renderer, {
-        id: `day-name-${index}`,
-        content: format(day, "EEE"),
-        fg: isSelected || isTodayDate ? COLORS.selectedFg : COLORS.dayHeaderFg,
+      const headerText = new TextRenderable(this.renderer, {
+        id: `time-grid-day-header-text-${index}`,
+        content: `${format(day, "EEE")} ${getDate(day)}`,
+        fg: selected || today ? COLORS.selectedFg : COLORS.dayHeaderFg,
       })
-      dayHeader.add(dayNameText)
-
-      const dayNumText = new TextRenderable(this.renderer, {
-        id: `day-num-${index}`,
-        content: String(getDate(day)),
-        fg: isSelected || isTodayDate ? COLORS.selectedFg : COLORS.dayHeaderFg,
-      })
-      dayHeader.add(dayNumText)
-
-      dayHeadersBox.add(dayHeader)
+      dayHeader.add(headerText)
+      headerRow.add(dayHeader)
     })
 
-    // Week view scrollable area
-    this.weekViewScrollBox = new ScrollBoxRenderable(this.renderer, {
-      id: "week-scroll",
+    const hoursScroll = new ScrollBoxRenderable(this.renderer, {
+      id: "time-grid-hours-scroll",
       flexGrow: 1,
       backgroundColor: "transparent",
       scrollbarOptions: {
@@ -258,94 +435,201 @@ class GoogleCalendarTUI {
         },
       },
     })
-    weekContainer.add(this.weekViewScrollBox)
+    container.add(hoursScroll)
 
-    // Time slots
     HOURS.forEach(hour => {
       const hourRow = new BoxRenderable(this.renderer, {
-        id: `hour-row-${hour}`,
+        id: `time-grid-hour-row-${hour}`,
+        height: 2,
         width: "100%",
-        height: 3,
         flexShrink: 0,
         flexDirection: "row",
         gap: 1,
       })
 
-      // Time label
       const timeLabel = new BoxRenderable(this.renderer, {
-        id: `time-label-${hour}`,
-        width: 6,
-        height: 3,
+        id: `time-grid-hour-label-${hour}`,
+        width: TIME_COLUMN_WIDTH,
+        height: 2,
         flexShrink: 0,
         backgroundColor: COLORS.timeColumn,
         border: true,
         borderStyle: "single",
         borderColor: COLORS.border,
+        justifyContent: "center",
       })
-      const timeText = new TextRenderable(this.renderer, {
-        id: `time-text-${hour}`,
+      const labelText = new TextRenderable(this.renderer, {
+        id: `time-grid-hour-label-text-${hour}`,
         content: `${hour.toString().padStart(2, "0")}:00`,
         fg: COLORS.otherMonthFg,
         alignSelf: "center",
       })
-      timeLabel.add(timeText)
+      timeLabel.add(labelText)
       hourRow.add(timeLabel)
 
-      // Day columns for this hour
-      weekDays_list.forEach((day, dayIndex) => {
-        const isSelected = isSameDay(day, this.selectedDate)
-        const isTodayDate = isToday(day)
-        const isWeekend = dayIndex === 0 || dayIndex === 6
+      visibleDays.forEach((day, dayIndex) => {
+        const selected = isSameDay(day, this.selectedDate)
+        const today = isToday(day)
+        const weekend = getDay(day) === 0 || getDay(day) === 6
         const hourEvents = this.getEventsForHour(day, hour)
-        const hasEvents = hourEvents.length > 0
+        const firstEvent = hourEvents[0]
+        const eventColor = firstEvent
+          ? this.calendars.find(calendar => calendar.id === firstEvent.calendarId)?.color || COLORS.eventDot
+          : COLORS.fg
+        const eventText = firstEvent ? this.truncate(firstEvent.title, 14) : ""
 
         const dayCell = new BoxRenderable(this.renderer, {
-          id: `day-cell-${hour}-${dayIndex}`,
+          id: `time-grid-day-cell-${hour}-${dayIndex}`,
           flexGrow: 1,
           flexBasis: 0,
-          height: 3,
-          backgroundColor: isSelected ? COLORS.selectedBg : isWeekend ? COLORS.weekendBg : COLORS.bg,
+          height: 2,
+          backgroundColor: selected ? COLORS.selectedBg : today ? COLORS.todayBg : weekend ? COLORS.weekendBg : COLORS.bg,
           border: true,
           borderStyle: "single",
-          borderColor: isSelected ? COLORS.selectedFg : COLORS.border,
-          padding: 0,
+          borderColor: selected ? COLORS.selectedFg : COLORS.border,
+          paddingLeft: 0,
+          paddingRight: 0,
           overflow: "hidden",
         })
 
-        // Show events in this cell
-        if (hasEvents) {
-          hourEvents.slice(0, 1).forEach((event, i) => {
-            const calendar = this.calendars.find(c => c.id === event.calendarId)
-            const eventColor = calendar?.color || COLORS.eventDot
-
-            const eventText = new TextRenderable(this.renderer, {
-              id: `event-${hour}-${dayIndex}-${i}`,
-              content: event.title.length > 8 ? event.title.slice(0, 7) + "…" : event.title,
-              fg: eventColor,
-              marginTop: 0,
-              marginLeft: 0,
-            })
-            dayCell.add(eventText)
+        if (eventText) {
+          const eventLabel = new TextRenderable(this.renderer, {
+            id: `time-grid-event-label-${hour}-${dayIndex}`,
+            content: eventText,
+            fg: eventColor,
+            marginLeft: 0,
           })
+          dayCell.add(eventLabel)
         }
 
         hourRow.add(dayCell)
       })
 
-      this.weekViewScrollBox.add(hourRow)
+      hoursScroll.add(hourRow)
     })
 
-    // Scroll to current hour on init
     const currentHour = new Date().getHours()
-    const scrollPos = Math.max(0, (currentHour - 2) * 3)
+    const visibleStartHour = HOURS[0] ?? 6
+    const hourOffset = Math.max(0, currentHour - visibleStartHour - 1)
     setTimeout(() => {
-      this.weekViewScrollBox?.scrollTo({ x: 0, y: scrollPos })
+      hoursScroll.scrollTo({ x: 0, y: hourOffset * 2 })
     }, 100)
+  }
 
-    // Events sidebar
+  private createMonthGrid(container: BoxRenderable, layout: LayoutConfig) {
+    const visibleDayIndices = this.getVisibleMonthDayIndices(layout)
+
+    const weekdayHeader = new BoxRenderable(this.renderer, {
+      id: "month-weekday-header",
+      height: 3,
+      flexShrink: 0,
+      flexDirection: "row",
+      gap: 1,
+      marginBottom: 1,
+    })
+    container.add(weekdayHeader)
+
+    visibleDayIndices.forEach((dayIndex, index) => {
+      const dayName = format(addDays(startOfWeek(new Date(), { weekStartsOn: 0 }), dayIndex), "EEE")
+      const headerCell = new BoxRenderable(this.renderer, {
+        id: `month-weekday-header-cell-${index}`,
+        flexGrow: 1,
+        flexBasis: 0,
+        height: 3,
+        border: true,
+        borderStyle: "single",
+        borderColor: COLORS.border,
+        backgroundColor: dayIndex === 0 || dayIndex === 6 ? COLORS.weekendBg : COLORS.dayHeaderBg,
+        justifyContent: "center",
+        alignItems: "center",
+      })
+      const text = new TextRenderable(this.renderer, {
+        id: `month-weekday-header-text-${index}`,
+        content: dayName,
+        fg: COLORS.dayHeaderFg,
+      })
+      headerCell.add(text)
+      weekdayHeader.add(headerCell)
+    })
+
+    const monthScroll = new ScrollBoxRenderable(this.renderer, {
+      id: "month-grid-scroll",
+      flexGrow: 1,
+      backgroundColor: "transparent",
+      scrollbarOptions: {
+        trackOptions: {
+          foregroundColor: COLORS.scrollThumb,
+          backgroundColor: COLORS.scrollBg,
+        },
+      },
+    })
+    container.add(monthScroll)
+
+    const gridStart = startOfWeek(startOfMonth(this.currentDate), { weekStartsOn: 0 })
+    const gridEnd = endOfWeek(endOfMonth(this.currentDate), { weekStartsOn: 0 })
+    const totalDays = differenceInCalendarDays(gridEnd, gridStart) + 1
+    const rows = Math.max(1, Math.ceil(totalDays / 7))
+
+    for (let row = 0; row < rows; row++) {
+      const weekRow = new BoxRenderable(this.renderer, {
+        id: `month-week-row-${row}`,
+        height: 5,
+        flexShrink: 0,
+        flexDirection: "row",
+        gap: 1,
+        marginBottom: 1,
+      })
+
+      visibleDayIndices.forEach((dow, index) => {
+        const day = addDays(gridStart, row * 7 + dow)
+        const inMonth = isSameMonth(day, this.currentDate)
+        const selected = isSameDay(day, this.selectedDate)
+        const today = isToday(day)
+        const dayEvents = this.getEventsForDate(day).slice(0, 2)
+
+        const cell = new BoxRenderable(this.renderer, {
+          id: `month-day-cell-${row}-${index}`,
+          flexGrow: 1,
+          flexBasis: 0,
+          height: 5,
+          border: true,
+          borderStyle: selected || today ? "double" : "single",
+          borderColor: selected ? COLORS.selectedFg : today ? COLORS.todayFg : COLORS.border,
+          backgroundColor: selected ? COLORS.selectedBg : inMonth ? COLORS.bg : COLORS.weekendBg,
+          overflow: "hidden",
+          paddingLeft: 0,
+          paddingRight: 0,
+        })
+
+        const numberText = new TextRenderable(this.renderer, {
+          id: `month-day-number-${row}-${index}`,
+          content: String(getDate(day)),
+          fg: selected ? COLORS.selectedFg : inMonth ? COLORS.fg : COLORS.otherMonthFg,
+        })
+        cell.add(numberText)
+
+        dayEvents.forEach((event, eventIndex) => {
+          const color = this.calendars.find(calendar => calendar.id === event.calendarId)?.color || COLORS.eventDot
+          const eventLine = new TextRenderable(this.renderer, {
+            id: `month-day-event-${row}-${index}-${eventIndex}`,
+            content: this.truncate(event.title, 12),
+            fg: color,
+            marginTop: 0,
+          })
+          cell.add(eventLine)
+        })
+
+        weekRow.add(cell)
+      })
+
+      monthScroll.add(weekRow)
+    }
+  }
+
+  private createEventsSidebar(contentBox: BoxRenderable, sidebarWidth: number) {
     this.eventsBox = new BoxRenderable(this.renderer, {
       id: "events-box",
-      width: 35,
+      width: sidebarWidth,
       flexShrink: 0,
       flexDirection: "column",
       border: true,
@@ -356,7 +640,6 @@ class GoogleCalendarTUI {
     })
     contentBox.add(this.eventsBox)
 
-    // Selected date header
     const selectedDateHeader = new TextRenderable(this.renderer, {
       id: "selected-date-header",
       content: format(this.selectedDate, "EEEE, MMM d"),
@@ -365,19 +648,17 @@ class GoogleCalendarTUI {
     })
     this.eventsBox.add(selectedDateHeader)
 
-    // All-day events section
-    const allDayEvents = this.getEventsForDate(this.selectedDate).filter(e => !e.time)
+    const allDayEvents = this.getEventsForDate(this.selectedDate).filter(event => !event.time)
     if (allDayEvents.length > 0) {
       const allDayHeader = new TextRenderable(this.renderer, {
         id: "allday-header",
         content: "All Day",
         fg: COLORS.otherMonthFg,
-        marginBottom: 0,
       })
       this.eventsBox.add(allDayHeader)
 
       allDayEvents.forEach((event, index) => {
-        const calendar = this.calendars.find(c => c.id === event.calendarId)
+        const color = this.calendars.find(calendar => calendar.id === event.calendarId)?.color || COLORS.eventDot
         const eventBox = new BoxRenderable(this.renderer, {
           id: `allday-event-${index}`,
           width: "100%",
@@ -387,28 +668,25 @@ class GoogleCalendarTUI {
           marginBottom: 1,
           border: true,
           borderStyle: "single",
-          borderColor: calendar?.color || COLORS.eventDot,
+          borderColor: color,
         })
-
         const eventTitle = new TextRenderable(this.renderer, {
           id: `allday-title-${index}`,
-          content: event.title,
+          content: this.truncate(event.title, 28),
           fg: COLORS.fg,
         })
         eventBox.add(eventTitle)
-        this.eventsBox.add(eventBox)
+        this.eventsBox?.add(eventBox)
       })
     }
 
-    // Timed events list
-    const timedEventsHeader = new TextRenderable(this.renderer, {
-      id: "timed-header",
+    const timedHeader = new TextRenderable(this.renderer, {
+      id: "timed-events-header",
       content: "Events",
       fg: COLORS.otherMonthFg,
-      marginTop: allDayEvents.length > 0 ? 1 : 0,
-      marginBottom: 0,
+      marginTop: 1,
     })
-    this.eventsBox.add(timedEventsHeader)
+    this.eventsBox.add(timedHeader)
 
     this.eventsScrollBox = new ScrollBoxRenderable(this.renderer, {
       id: "events-scroll",
@@ -422,38 +700,31 @@ class GoogleCalendarTUI {
       },
     })
     this.eventsBox.add(this.eventsScrollBox)
-
     this.updateEventsList()
   }
 
   private updateEventsList() {
-    if (!this.eventsScrollBox) return
+    if (!this.eventsScrollBox || !this.eventsBox) return
 
-    const children = this.eventsScrollBox.getChildren()
-    const childIds = children.map(child => child.id)
-    childIds.forEach(id => {
-      this.eventsScrollBox?.remove(id)
-    })
+    this.eventsScrollBox.getChildren().forEach(child => this.eventsScrollBox?.remove(child.id))
 
-    const dayEvents = this.getEventsForDate(this.selectedDate).filter(e => e.time)
-    dayEvents.sort((a, b) => (a.time || "").localeCompare(b.time || ""))
+    const dayEvents = this.getEventsForDate(this.selectedDate)
+      .filter(event => Boolean(event.time))
+      .sort((a, b) => (a.time || "").localeCompare(b.time || ""))
 
     if (dayEvents.length === 0) {
-      const noEventsText = new TextRenderable(this.renderer, {
-        id: "no-events",
+      const emptyText = new TextRenderable(this.renderer, {
+        id: "no-events-text",
         content: "No timed events",
         fg: COLORS.otherMonthFg,
-        alignSelf: "center",
-        marginTop: 2,
+        marginTop: 1,
       })
-      this.eventsScrollBox.add(noEventsText)
+      this.eventsScrollBox.add(emptyText)
     } else {
       dayEvents.forEach((event, index) => {
-        const calendar = this.calendars.find(c => c.id === event.calendarId)
-        const eventColor = calendar?.color || COLORS.eventDot
-
+        const color = this.calendars.find(calendar => calendar.id === event.calendarId)?.color || COLORS.eventDot
         const eventBox = new BoxRenderable(this.renderer, {
-          id: `event-${index}`,
+          id: `timed-event-${index}`,
           width: "100%",
           flexShrink: 0,
           backgroundColor: index % 2 === 0 ? COLORS.bg : "transparent",
@@ -461,49 +732,267 @@ class GoogleCalendarTUI {
           marginBottom: 1,
           border: true,
           borderStyle: "single",
-          borderColor: eventColor,
+          borderColor: color,
         })
 
-        const eventTime = new TextRenderable(this.renderer, {
-          id: `event-time-${index}`,
+        const timeText = new TextRenderable(this.renderer, {
+          id: `timed-event-time-${index}`,
           content: event.time || "",
-          fg: eventColor,
+          fg: color,
         })
-        eventBox.add(eventTime)
+        eventBox.add(timeText)
 
-        const eventTitle = new TextRenderable(this.renderer, {
-          id: `event-title-${index}`,
-          content: event.title,
+        const titleText = new TextRenderable(this.renderer, {
+          id: `timed-event-title-${index}`,
+          content: this.truncate(event.title, 30),
           fg: COLORS.fg,
           marginTop: 0,
         })
-        eventBox.add(eventTitle)
+        eventBox.add(titleText)
 
         if (event.location) {
-          const eventLocation = new TextRenderable(this.renderer, {
-            id: `event-location-${index}`,
-            content: `📍 ${event.location}`,
+          const locationText = new TextRenderable(this.renderer, {
+            id: `timed-event-location-${index}`,
+            content: this.truncate(`@ ${event.location}`, 30),
             fg: COLORS.otherMonthFg,
             marginTop: 0,
           })
-          eventBox.add(eventLocation)
+          eventBox.add(locationText)
         }
 
-        this.eventsScrollBox.add(eventBox)
+        this.eventsScrollBox?.add(eventBox)
       })
     }
 
-    // Update selected date header
-    const selectedDateHeader = this.eventsBox?.getRenderable("selected-date-header") as TextRenderable
+    const selectedDateHeader = this.eventsBox.getRenderable("selected-date-header") as TextRenderable | undefined
     if (selectedDateHeader) {
       selectedDateHeader.content = format(this.selectedDate, "EEEE, MMM d")
     }
+  }
 
+  private truncate(text: string, maxLength: number): string {
+    if (maxLength <= 0) return ""
+    if (text.length <= maxLength) return text
+    if (maxLength <= 1) return text.slice(0, maxLength)
+    return `${text.slice(0, maxLength - 1)}~`
+  }
+
+  private async refreshCalendar(forceFetch = false) {
+    await this.loadEventsIfNeeded(forceFetch)
+
+    if (this.rootBox) {
+      this.rootBox.destroyRecursively()
+      this.rootBox = null
+    }
+    this.createLayout()
+    this.renderer.requestRender()
+  }
+
+  private async setViewMode(mode: ViewMode) {
+    if (this.viewMode === mode) return
+    this.viewMode = mode
+    this.currentDate = this.selectedDate
+    this.weekStart = startOfWeek(this.selectedDate, { weekStartsOn: 0 })
+    await this.refreshCalendar()
+  }
+
+  private isModalOpen(): boolean {
+    return Boolean(this.renderer.root.getRenderable("calendar-overlay") || this.renderer.root.getRenderable("help-overlay"))
+  }
+
+  private setupKeyboardHandling() {
+    this.renderer.keyInput.on("keypress", (key: KeyEvent) => {
+      void this.handleKeypress(key)
+    })
+  }
+
+  private async handleKeypress(key: KeyEvent) {
+    if (this.isModalOpen()) return
+
+    if (key.sequence === "?") {
+      this.showHelpOverlay()
+      return
+    }
+
+    switch (key.name) {
+      case "q":
+        if (!key.ctrl) this.cleanup()
+        return
+      case "left":
+        await this.navigateDay(-1)
+        return
+      case "right":
+        await this.navigateDay(1)
+        return
+      case "up":
+      case "k":
+        await this.navigateWeek(-1)
+        return
+      case "down":
+      case "j":
+        await this.navigateWeek(1)
+        return
+      case "h":
+        await this.navigateMonth(-1)
+        return
+      case "l":
+        await this.navigateMonth(1)
+        return
+      case "d":
+      case "1":
+        await this.setViewMode("day")
+        return
+      case "w":
+      case "2":
+        await this.setViewMode("week")
+        return
+      case "m":
+      case "3":
+        await this.setViewMode("month")
+        return
+      case "return":
+      case "linefeed":
+        this.viewDayDetails()
+        return
+      case "t":
+        await this.goToToday()
+        return
+      case "r":
+        await this.refreshEvents()
+        return
+      case "c":
+        this.showCalendarSelector()
+        return
+      case "slash":
+        if (key.shift) this.showHelpOverlay()
+        return
+      default:
+        return
+    }
+  }
+
+  private async navigateDay(days: number) {
+    this.selectedDate = addDays(this.selectedDate, days)
+    this.currentDate = this.selectedDate
+    this.weekStart = startOfWeek(this.selectedDate, { weekStartsOn: 0 })
+    await this.refreshCalendar()
+  }
+
+  private async navigateWeek(weeks: number) {
+    this.selectedDate = addWeeks(this.selectedDate, weeks)
+    this.currentDate = this.selectedDate
+    this.weekStart = startOfWeek(this.selectedDate, { weekStartsOn: 0 })
+    await this.refreshCalendar()
+  }
+
+  private async navigateMonth(direction: number) {
+    this.selectedDate = direction > 0 ? addMonths(this.selectedDate, 1) : subMonths(this.selectedDate, 1)
+    this.currentDate = this.selectedDate
+    this.weekStart = startOfWeek(this.selectedDate, { weekStartsOn: 0 })
+    await this.refreshCalendar()
+  }
+
+  private async goToToday() {
+    const today = new Date()
+    this.currentDate = today
+    this.selectedDate = today
+    this.weekStart = startOfWeek(today, { weekStartsOn: 0 })
+    await this.refreshCalendar()
+  }
+
+  private async refreshEvents() {
+    if (!this.isGoogleConnected) {
+      await this.refreshCalendar()
+      return
+    }
+    await this.refreshCalendar(true)
+  }
+
+  private showHelpOverlay() {
+    if (this.isModalOpen()) return
+
+    const overlay = new BoxRenderable(this.renderer, {
+      id: "help-overlay",
+      width: "100%",
+      height: "100%",
+      backgroundColor: "rgba(0,0,0,0.7)",
+      position: "absolute",
+      top: 0,
+      left: 0,
+      zIndex: 100,
+      justifyContent: "center",
+      alignItems: "center",
+    })
+    this.renderer.root.add(overlay)
+
+    const dialog = new BoxRenderable(this.renderer, {
+      id: "help-dialog",
+      width: 70,
+      height: "auto",
+      flexDirection: "column",
+      backgroundColor: COLORS.headerBg,
+      border: true,
+      borderStyle: "rounded",
+      borderColor: COLORS.border,
+      padding: 2,
+    })
+    overlay.add(dialog)
+
+    const title = new TextRenderable(this.renderer, {
+      id: "help-title",
+      content: "Keyboard Commands",
+      fg: COLORS.headerFg,
+      alignSelf: "center",
+      marginBottom: 1,
+    })
+    dialog.add(title)
+
+    const lines = [
+      "Views: d day, w week, m month (also 1/2/3)",
+      "Navigate day: left / right",
+      "Navigate week: up / down (or k / j)",
+      "Navigate month: h / l",
+      "Today: t",
+      "Refresh events: r",
+      "Toggle calendars: c",
+      "Day detail dump: enter",
+      "Quit: q",
+      "Close this help: ?, esc, or enter",
+    ]
+
+    lines.forEach((line, index) => {
+      const text = new TextRenderable(this.renderer, {
+        id: `help-line-${index}`,
+        content: line,
+        fg: COLORS.fg,
+      })
+      dialog.add(text)
+    })
+
+    const close = () => {
+      this.renderer.keyInput.off("keypress", closeHandler)
+      overlay.destroyRecursively()
+      this.renderer.requestRender()
+    }
+
+    const closeHandler = (key: KeyEvent) => {
+      if (
+        key.name === "escape" ||
+        key.name === "return" ||
+        key.name === "linefeed" ||
+        key.name === "q" ||
+        key.sequence === "?"
+      ) {
+        close()
+      }
+    }
+
+    this.renderer.keyInput.on("keypress", closeHandler)
     this.renderer.requestRender()
   }
 
   private showCalendarSelector() {
-    if (!this.isGoogleConnected || this.calendars.length === 0) return
+    if (!this.isGoogleConnected || this.calendars.length === 0 || this.isModalOpen()) return
 
     const overlay = new BoxRenderable(this.renderer, {
       id: "calendar-overlay",
@@ -514,12 +1003,14 @@ class GoogleCalendarTUI {
       top: 0,
       left: 0,
       zIndex: 100,
+      justifyContent: "center",
+      alignItems: "center",
     })
     this.renderer.root.add(overlay)
 
     const dialogBox = new BoxRenderable(this.renderer, {
       id: "calendar-dialog",
-      width: 50,
+      width: 54,
       height: "auto",
       flexDirection: "column",
       backgroundColor: COLORS.headerBg,
@@ -527,14 +1018,12 @@ class GoogleCalendarTUI {
       borderStyle: "rounded",
       borderColor: COLORS.border,
       padding: 2,
-      alignSelf: "center",
-      marginTop: 5,
     })
     overlay.add(dialogBox)
 
     const titleText = new TextRenderable(this.renderer, {
       id: "calendar-dialog-title",
-      content: "Select Calendars (Space to toggle)",
+      content: "Select Calendars",
       fg: COLORS.headerFg,
       alignSelf: "center",
       marginBottom: 1,
@@ -549,33 +1038,28 @@ class GoogleCalendarTUI {
     dialogBox.add(calendarListBox)
 
     let selectedIndex = 0
-    const calendarItems: { box: BoxRenderable; text: TextRenderable; cal: CalendarConfig }[] = []
+    const originalEnabledState = this.calendars.map(calendar => calendar.enabled)
 
-    // Render calendar items
     const renderCalendarItems = () => {
-      calendarListBox.getChildren().forEach(c => calendarListBox.remove(c.id))
-      calendarItems.length = 0
+      calendarListBox.getChildren().forEach(child => calendarListBox.remove(child.id))
 
-      this.calendars.forEach((cal, index) => {
-        const isSelected = index === selectedIndex
-        const itemBox = new BoxRenderable(this.renderer, {
-          id: `cal-item-${index}`,
+      this.calendars.forEach((calendar, index) => {
+        const selected = index === selectedIndex
+        const item = new BoxRenderable(this.renderer, {
+          id: `calendar-item-${index}`,
           width: "100%",
+          backgroundColor: selected ? COLORS.selectedBg : "transparent",
           height: 1,
-          backgroundColor: isSelected ? COLORS.selectedBg : "transparent",
-          padding: 0,
-          marginBottom: 0,
         })
 
-        const checkmark = cal.enabled ? "☑" : "☐"
-        const itemText = new TextRenderable(this.renderer, {
-          id: `cal-text-${index}`,
-          content: `${checkmark} ${cal.name}`,
-          fg: isSelected ? COLORS.selectedFg : COLORS.fg,
+        const check = calendar.enabled ? "[x]" : "[ ]"
+        const line = new TextRenderable(this.renderer, {
+          id: `calendar-item-text-${index}`,
+          content: `${check} ${this.truncate(calendar.name, 46)}`,
+          fg: selected ? COLORS.selectedFg : COLORS.fg,
         })
-        itemBox.add(itemText)
-        calendarListBox.add(itemBox)
-        calendarItems.push({ box: itemBox, text: itemText, cal })
+        item.add(line)
+        calendarListBox.add(item)
       })
     }
 
@@ -583,214 +1067,98 @@ class GoogleCalendarTUI {
 
     const hintText = new TextRenderable(this.renderer, {
       id: "calendar-hint",
-      content: "↑↓: Navigate  |  Space: Toggle  |  Enter: Done",
+      content: "up/down move, space toggle, enter save, esc cancel",
       fg: COLORS.dayHeaderFg,
       alignSelf: "center",
       marginTop: 1,
     })
     dialogBox.add(hintText)
 
-    // Handle keyboard
+    const close = async (applyChanges: boolean) => {
+      this.renderer.keyInput.off("keypress", handleKey)
+      overlay.destroyRecursively()
+
+      if (applyChanges) {
+        this.selectedCalendarIds = this.calendars.filter(calendar => calendar.enabled).map(calendar => calendar.id)
+        this.loadedRange = null
+        await this.refreshCalendar(true)
+      } else {
+        this.calendars.forEach((calendar, index) => {
+          calendar.enabled = originalEnabledState[index] ?? calendar.enabled
+        })
+        this.renderer.requestRender()
+      }
+    }
+
     const handleKey = (key: KeyEvent) => {
-      if (key.name === "space") {
-        const cal = this.calendars[selectedIndex]
-        if (cal) {
-          cal.enabled = !cal.enabled
+      void (async () => {
+        if (key.name === "up" || key.name === "k") {
+          selectedIndex = Math.max(0, selectedIndex - 1)
           renderCalendarItems()
           this.renderer.requestRender()
+          return
         }
-      } else if (key.name === "up" || key.name === "k") {
-        selectedIndex = Math.max(0, selectedIndex - 1)
-        renderCalendarItems()
-        this.renderer.requestRender()
-      } else if (key.name === "down" || key.name === "j") {
-        selectedIndex = Math.min(this.calendars.length - 1, selectedIndex + 1)
-        renderCalendarItems()
-        this.renderer.requestRender()
-      } else if (key.name === "return" || key.name === "linefeed" || key.name === "escape") {
-        overlay.destroy()
-        this.renderer.keyInput.off("keypress", handleKey)
-        
-        this.selectedCalendarIds = this.calendars.filter(c => c.enabled).map(c => c.id)
-        
-        if (this.isGoogleConnected) {
-          this.googleClient.fetchEventsFromCalendars(this.selectedDate, this.selectedCalendarIds)
-            .then(events => {
-              this.events = events
-              this.refreshCalendar()
-            })
+
+        if (key.name === "down" || key.name === "j") {
+          selectedIndex = Math.min(this.calendars.length - 1, selectedIndex + 1)
+          renderCalendarItems()
+          this.renderer.requestRender()
+          return
         }
-      }
+
+        if (key.name === "space") {
+          const target = this.calendars[selectedIndex]
+          if (target) {
+            target.enabled = !target.enabled
+            renderCalendarItems()
+            this.renderer.requestRender()
+          }
+          return
+        }
+
+        if (key.name === "return" || key.name === "linefeed") {
+          await close(true)
+          return
+        }
+
+        if (key.name === "escape" || key.name === "q") {
+          await close(false)
+        }
+      })()
     }
 
     this.renderer.keyInput.on("keypress", handleKey)
     this.renderer.requestRender()
   }
 
-  private async refreshCalendar() {
-    if (this.rootBox) {
-      this.rootBox.destroyRecursively()
-    }
-    this.createLayout()
-    this.renderer.requestRender()
-  }
-
-  private setupKeyboardHandling() {
-    this.renderer.keyInput.on("keypress", (key: KeyEvent) => {
-      // Don't process if we're in a modal
-      if (this.renderer.root.getRenderable("calendar-overlay")) return
-
-      switch (key.name) {
-        case "q":
-          if (!key.ctrl) {
-            this.cleanup()
-          }
-          break
-        case "left":
-          this.navigateDay(-1)
-          break
-        case "right":
-          this.navigateDay(1)
-          break
-        case "up":
-          this.navigateWeek(-1)
-          break
-        case "down":
-          this.navigateWeek(1)
-          break
-        case "h":
-          this.navigateMonth(-1)
-          break
-        case "l":
-          this.navigateMonth(1)
-          break
-        case "return":
-        case "linefeed":
-          this.viewDayDetails()
-          break
-        case "t":
-          this.goToToday()
-          break
-        case "r":
-          this.refreshEvents()
-          break
-        case "c":
-          this.showCalendarSelector()
-          break
-      }
-    })
-  }
-
-  private navigateDay(days: number) {
-    this.selectedDate = addDays(this.selectedDate, days)
-    
-    // Update week if needed
-    const newWeekStart = startOfWeek(this.selectedDate, { weekStartsOn: 0 })
-    if (!isSameDay(newWeekStart, this.weekStart)) {
-      this.weekStart = newWeekStart
-      this.currentDate = this.selectedDate
-      if (this.isGoogleConnected) {
-        this.googleClient.fetchEventsFromCalendars(this.selectedDate, this.selectedCalendarIds)
-          .then(events => {
-            this.events = events
-            this.refreshCalendar()
-          })
-      } else {
-        this.refreshCalendar()
-      }
-    } else {
-      this.refreshCalendar()
-    }
-  }
-
-  private navigateWeek(weeks: number) {
-    this.weekStart = addWeeks(this.weekStart, weeks)
-    this.selectedDate = addWeeks(this.selectedDate, weeks)
-    this.currentDate = this.selectedDate
-    
-    if (this.isGoogleConnected) {
-      this.googleClient.fetchEventsFromCalendars(this.selectedDate, this.selectedCalendarIds)
-        .then(events => {
-          this.events = events
-          this.refreshCalendar()
-        })
-    } else {
-      this.refreshCalendar()
-    }
-  }
-
-  private async navigateMonth(direction: number) {
-    if (direction > 0) {
-      this.currentDate = addMonths(this.currentDate, 1)
-    } else {
-      this.currentDate = subMonths(this.currentDate, 1)
-    }
-    this.selectedDate = this.currentDate
-    this.weekStart = startOfWeek(this.selectedDate, { weekStartsOn: 0 })
-    
-    if (this.isGoogleConnected) {
-      this.events = await this.googleClient.fetchEventsFromCalendars(this.selectedDate, this.selectedCalendarIds)
-    }
-    
-    await this.refreshCalendar()
-  }
-
-  private goToToday() {
-    const today = new Date()
-    this.currentDate = today
-    this.selectedDate = today
-    this.weekStart = startOfWeek(today, { weekStartsOn: 0 })
-    
-    if (this.isGoogleConnected) {
-      this.googleClient.fetchEventsFromCalendars(today, this.selectedCalendarIds)
-        .then(events => {
-          this.events = events
-          this.refreshCalendar()
-        })
-    } else {
-      this.refreshCalendar()
-    }
-  }
-
-  private async refreshEvents() {
-    if (this.isGoogleConnected) {
-      console.log("\nRefreshing events...")
-      this.events = await this.googleClient.fetchEventsFromCalendars(this.selectedDate, this.selectedCalendarIds)
-      this.updateEventsList()
-      this.refreshCalendar()
-      console.log("Events refreshed!\n")
-    }
-  }
-
   private viewDayDetails() {
-    const events = this.getEventsForDate(this.selectedDate)
+    const dayEvents = this.getEventsForDate(this.selectedDate)
     console.log(`\nEvents for ${format(this.selectedDate, "MMMM d, yyyy")}:`)
-    if (events.length === 0) {
+    if (dayEvents.length === 0) {
       console.log("  No events")
-    } else {
-      events.forEach(event => {
-        const calendar = this.calendars.find(c => c.id === event.calendarId)
-        console.log(`  ${event.time || "All day"}: ${event.title}`)
-        if (calendar) {
-          console.log(`    📅 ${calendar.name}`)
-        }
-        if (event.description) {
-          console.log(`    ${event.description}`)
-        }
-        if (event.location) {
-          console.log(`    📍 ${event.location}`)
-        }
-      })
+      console.log("")
+      return
     }
+
+    dayEvents.forEach(event => {
+      const calendar = this.calendars.find(cal => cal.id === event.calendarId)
+      console.log(`  ${event.time || "All day"}: ${event.title}`)
+      if (calendar) console.log(`    calendar: ${calendar.name}`)
+      if (event.description) console.log(`    ${event.description}`)
+      if (event.location) console.log(`    location: ${event.location}`)
+    })
     console.log("")
   }
 
   private cleanup() {
+    if (this.resizeHandler) {
+      process.stdout.off("resize", this.resizeHandler)
+      this.resizeHandler = null
+    }
     this.renderer.destroy()
     process.exit(0)
   }
 }
 
-// Run the application
 const app = new GoogleCalendarTUI()
 app.init().catch(console.error)
