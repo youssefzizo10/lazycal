@@ -24,7 +24,7 @@ import {
   startOfWeek,
   subMonths,
 } from "date-fns"
-import { access } from "fs/promises"
+import { access, mkdir, readFile, writeFile } from "fs/promises"
 import { homedir } from "os"
 import { join } from "path"
 import { createInterface } from "readline/promises"
@@ -56,7 +56,9 @@ const COLORS = {
 const HOURS = Array.from({ length: 24 }, (_, i) => i)
 const TIME_COLUMN_WIDTH = 7
 const TIME_GRID_ROW_HEIGHT = 3
-const CREDENTIALS_PATH = join(homedir(), ".config", "lazycal", "credentials.json")
+const CONFIG_DIR = join(homedir(), ".config", "lazycal")
+const CREDENTIALS_PATH = join(CONFIG_DIR, "credentials.json")
+const UI_STATE_PATH = join(CONFIG_DIR, "ui-state.json")
 
 type ViewMode = "day" | "week" | "month"
 
@@ -77,6 +79,10 @@ interface LayoutConfig {
   showSidebar: boolean
   sidebarWidth: number
   visibleDayCount: number
+}
+
+interface UiState {
+  disabledCalendarIds: string[]
 }
 
 class GoogleCalendarTUI {
@@ -138,13 +144,25 @@ class GoogleCalendarTUI {
   private async loadCalendarsAndEvents() {
     console.log("Connected to Google Calendar!")
     const availableCalendars = await this.googleClient.listCalendars()
+    const uiState = await this.loadUiState()
+    const disabledCalendarIds = new Set(uiState?.disabledCalendarIds || [])
+
     this.calendars = availableCalendars.map((calendar, index) => ({
       id: calendar.id,
       name: calendar.name,
       color: ["#4285F4", "#EA4335", "#FBBC04", "#34A853", "#9AA0A6", "#673AB7"][index % 6],
-      enabled: true,
+      enabled: !disabledCalendarIds.has(calendar.id),
     }))
+
+    if (this.calendars.length > 0 && this.calendars.every(calendar => !calendar.enabled)) {
+      this.calendars.forEach(calendar => {
+        calendar.enabled = true
+      })
+    }
+
     this.selectedCalendarIds = this.calendars.map(calendar => calendar.id)
+      .filter(calendarId => this.calendars.some(calendar => calendar.id === calendarId && calendar.enabled))
+
     console.log(`Found ${this.calendars.length} calendars`)
     await this.loadEventsIfNeeded(true)
   }
@@ -200,6 +218,48 @@ class GoogleCalendarTUI {
     }
   }
 
+  private parseUiState(content: string): UiState | null {
+    try {
+      const parsed = JSON.parse(content) as { disabledCalendarIds?: unknown }
+      if (!Array.isArray(parsed.disabledCalendarIds)) {
+        return { disabledCalendarIds: [] }
+      }
+
+      const disabledCalendarIds = parsed.disabledCalendarIds.filter(
+        (calendarId): calendarId is string => typeof calendarId === "string"
+      )
+      return { disabledCalendarIds }
+    } catch {
+      return null
+    }
+  }
+
+  private async loadUiState(): Promise<UiState | null> {
+    try {
+      const content = await readFile(UI_STATE_PATH, "utf-8")
+      return this.parseUiState(content)
+    } catch {
+      return null
+    }
+  }
+
+  private async persistUiState() {
+    const disabledCalendarIds = this.calendars
+      .filter(calendar => !calendar.enabled)
+      .map(calendar => calendar.id)
+
+    try {
+      await mkdir(CONFIG_DIR, { recursive: true })
+      await writeFile(
+        UI_STATE_PATH,
+        JSON.stringify({ disabledCalendarIds } satisfies UiState, null, 2),
+        "utf-8"
+      )
+    } catch (error) {
+      console.error("Unable to save UI state:", error)
+    }
+  }
+
   private setupResizeHandling() {
     this.resizeHandler = () => {
       void this.refreshCalendar()
@@ -244,6 +304,15 @@ class GoogleCalendarTUI {
     if (!calendarColor) return COLORS.eventDot
     if (calendarColor.toLowerCase() === COLORS.bg.toLowerCase()) return COLORS.eventDot
     return calendarColor
+  }
+
+  private getGridEventLabelMaxLength(layout: LayoutConfig, visibleDayCount: number): number {
+    const reserved = layout.showSidebar ? layout.sidebarWidth + 2 : 2
+    const gridWidth = Math.max(20, layout.terminalWidth - reserved)
+    const gapWidth = visibleDayCount
+    const dayColumnsWidth = Math.max(8, gridWidth - TIME_COLUMN_WIDTH - gapWidth)
+    const perDayWidth = Math.max(8, Math.floor(dayColumnsWidth / Math.max(1, visibleDayCount)))
+    return Math.max(8, perDayWidth - 2)
   }
 
   private getCurrentRangeForView(): DateRange {
@@ -390,7 +459,7 @@ class GoogleCalendarTUI {
       backgroundColor: COLORS.headerBg,
       paddingLeft: 1,
       paddingRight: 1,
-      justifyContent: "center",
+      justifyContent: "flex-start",
     })
     this.rootBox.add(headerBox)
 
@@ -399,6 +468,7 @@ class GoogleCalendarTUI {
       content: this.buildHeaderTitle(layout),
       fg: COLORS.headerFg,
       alignSelf: "center",
+      marginBottom: 1,
     })
     headerBox.add(titleText)
 
@@ -415,7 +485,10 @@ class GoogleCalendarTUI {
       flexGrow: 1,
       flexDirection: "row",
       gap: 1,
-      padding: 1,
+      paddingLeft: 1,
+      paddingRight: 1,
+      paddingBottom: 1,
+      paddingTop: 0,
     })
     this.rootBox.add(contentBox)
 
@@ -443,6 +516,7 @@ class GoogleCalendarTUI {
 
   private createTimeGrid(container: BoxRenderable, layout: LayoutConfig) {
     const visibleDays = this.getVisibleDays(layout)
+    const maxEventLabelLength = this.getGridEventLabelMaxLength(layout, visibleDays.length)
 
     const headerRow = new BoxRenderable(this.renderer, {
       id: "time-grid-header-row",
@@ -560,7 +634,10 @@ class GoogleCalendarTUI {
           : undefined
         const eventColor = this.getGridEventColor(selected, today, calendarColor)
         const eventText = firstEvent
-          ? this.truncate(`• ${firstEvent.title}${hourEvents.length > 1 ? ` +${hourEvents.length - 1}` : ""}`, 16)
+          ? this.truncate(
+              `• ${firstEvent.title}${hourEvents.length > 1 ? ` +${hourEvents.length - 1}` : ""}`,
+              maxEventLabelLength
+            )
           : ""
 
         const dayCell = new BoxRenderable(this.renderer, {
@@ -754,6 +831,7 @@ class GoogleCalendarTUI {
           border: true,
           borderStyle: "single",
           borderColor: color,
+          onMouseDown: () => this.showEventDetails(event),
         })
         const eventTitle = new TextRenderable(this.renderer, {
           id: `allday-title-${index}`,
@@ -818,6 +896,7 @@ class GoogleCalendarTUI {
           border: true,
           borderStyle: "single",
           borderColor: color,
+          onMouseDown: () => this.showEventDetails(event),
         })
 
         const timeText = new TextRenderable(this.renderer, {
@@ -882,7 +961,11 @@ class GoogleCalendarTUI {
   }
 
   private isModalOpen(): boolean {
-    return Boolean(this.renderer.root.getRenderable("calendar-overlay") || this.renderer.root.getRenderable("help-overlay"))
+    return Boolean(
+      this.renderer.root.getRenderable("calendar-overlay") ||
+      this.renderer.root.getRenderable("help-overlay") ||
+      this.renderer.root.getRenderable("event-overlay")
+    )
   }
 
   private setupKeyboardHandling() {
@@ -934,10 +1017,6 @@ class GoogleCalendarTUI {
       case "m":
       case "3":
         await this.setViewMode("month")
-        return
-      case "return":
-      case "linefeed":
-        this.viewDayDetails()
         return
       case "t":
         await this.goToToday()
@@ -1049,7 +1128,7 @@ class GoogleCalendarTUI {
       "Refresh events: r",
       "Toggle calendars: c",
       "Toggle sidebar: s",
-      "Day detail dump: enter",
+      "Event details: click event card in sidebar",
       "Quit: q",
       "Close this help: ?, esc, or enter",
     ]
@@ -1076,6 +1155,92 @@ class GoogleCalendarTUI {
         key.name === "linefeed" ||
         key.name === "q" ||
         key.sequence === "?"
+      ) {
+        close()
+      }
+    }
+
+    this.renderer.keyInput.on("keypress", closeHandler)
+    this.renderer.requestRender()
+  }
+
+  private showEventDetails(event: CalendarEvent) {
+    if (this.isModalOpen()) return
+
+    const overlay = new BoxRenderable(this.renderer, {
+      id: "event-overlay",
+      width: "100%",
+      height: "100%",
+      backgroundColor: COLORS.overlayBg,
+      position: "absolute",
+      top: 0,
+      left: 0,
+      zIndex: 100,
+      justifyContent: "center",
+      alignItems: "center",
+    })
+    this.renderer.root.add(overlay)
+
+    const dialog = new BoxRenderable(this.renderer, {
+      id: "event-dialog",
+      width: 72,
+      height: "auto",
+      flexDirection: "column",
+      backgroundColor: COLORS.headerBg,
+      border: true,
+      borderStyle: "rounded",
+      borderColor: COLORS.border,
+      padding: 2,
+    })
+    overlay.add(dialog)
+
+    const calendarName = this.calendars.find(calendar => calendar.id === event.calendarId)?.name
+
+    const title = new TextRenderable(this.renderer, {
+      id: "event-title",
+      content: this.truncate(event.title, 64),
+      fg: COLORS.headerFg,
+      marginBottom: 1,
+    })
+    dialog.add(title)
+
+    const details: string[] = []
+    details.push(event.time ? `Time: ${event.time}` : "Time: All day")
+    details.push(`Date: ${format(event.date, "EEEE, MMM d, yyyy")}`)
+    if (calendarName) details.push(`Calendar: ${this.truncate(calendarName, 56)}`)
+    if (event.location) details.push(`Location: ${this.truncate(event.location, 56)}`)
+    if (event.description) details.push(`Notes: ${this.truncate(event.description, 58)}`)
+
+    details.forEach((line, index) => {
+      const detail = new TextRenderable(this.renderer, {
+        id: `event-detail-line-${index}`,
+        content: line,
+        fg: COLORS.fg,
+      })
+      dialog.add(detail)
+    })
+
+    const hint = new TextRenderable(this.renderer, {
+      id: "event-detail-hint",
+      content: "Press esc, enter, or q to close",
+      fg: COLORS.otherMonthFg,
+      marginTop: 1,
+      alignSelf: "center",
+    })
+    dialog.add(hint)
+
+    const close = () => {
+      this.renderer.keyInput.off("keypress", closeHandler)
+      overlay.destroyRecursively()
+      this.renderer.requestRender()
+    }
+
+    const closeHandler = (key: KeyEvent) => {
+      if (
+        key.name === "escape" ||
+        key.name === "return" ||
+        key.name === "linefeed" ||
+        key.name === "q"
       ) {
         close()
       }
@@ -1174,6 +1339,7 @@ class GoogleCalendarTUI {
 
       if (applyChanges) {
         this.selectedCalendarIds = this.calendars.filter(calendar => calendar.enabled).map(calendar => calendar.id)
+        await this.persistUiState()
         this.loadedRange = null
         await this.refreshCalendar(true)
       } else {
@@ -1223,25 +1389,6 @@ class GoogleCalendarTUI {
 
     this.renderer.keyInput.on("keypress", handleKey)
     this.renderer.requestRender()
-  }
-
-  private viewDayDetails() {
-    const dayEvents = this.getEventsForDate(this.selectedDate)
-    console.log(`\nEvents for ${format(this.selectedDate, "MMMM d, yyyy")}:`)
-    if (dayEvents.length === 0) {
-      console.log("  No events")
-      console.log("")
-      return
-    }
-
-    dayEvents.forEach(event => {
-      const calendar = this.calendars.find(cal => cal.id === event.calendarId)
-      console.log(`  ${event.time || "All day"}: ${event.title}`)
-      if (calendar) console.log(`    calendar: ${calendar.name}`)
-      if (event.description) console.log(`    ${event.description}`)
-      if (event.location) console.log(`    location: ${event.location}`)
-    })
-    console.log("")
   }
 
   private cleanup() {
