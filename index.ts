@@ -46,7 +46,7 @@ const COLORS = {
   timeColumn: "#1A202C",
 }
 
-const HOURS = Array.from({ length: 18 }, (_, i) => i + 6)
+const HOURS = Array.from({ length: 24 }, (_, i) => i)
 const TIME_COLUMN_WIDTH = 7
 
 type ViewMode = "day" | "week" | "month"
@@ -86,6 +86,7 @@ class GoogleCalendarTUI {
   private eventsScrollBox: ScrollBoxRenderable | null = null
   private eventsBox: BoxRenderable | null = null
   private resizeHandler: (() => void) | null = null
+  private sidebarEnabled = true
 
   constructor() {
     this.currentDate = new Date()
@@ -142,12 +143,35 @@ class GoogleCalendarTUI {
     return this.events.filter(event => isSameDay(event.date, date))
   }
 
+  private parseEventHour(timeValue: string): number | null {
+    const normalized = timeValue.replace(/\u202F/g, " ").trim()
+    const match = normalized.match(/^(\d{1,2})(?::(\d{2}))?(?:\s*([AP]M))?$/i)
+    if (!match) return null
+
+    let hour = Number.parseInt(match[1] || "", 10)
+    if (!Number.isFinite(hour)) return null
+
+    const meridiem = (match[3] || "").toUpperCase()
+    if (meridiem === "PM" && hour < 12) hour += 12
+    if (meridiem === "AM" && hour === 12) hour = 0
+    if (hour < 0 || hour > 23) return null
+
+    return hour
+  }
+
   private getEventsForHour(date: Date, hour: number): CalendarEvent[] {
     return this.events.filter(event => {
       if (!isSameDay(event.date, date) || !event.time) return false
-      const eventHour = Number.parseInt(event.time.split(":")[0] || "", 10)
-      return Number.isFinite(eventHour) && eventHour === hour
+      const eventHour = this.parseEventHour(event.time)
+      return eventHour !== null && eventHour === hour
     })
+  }
+
+  private getGridEventColor(daySelected: boolean, dayIsToday: boolean, calendarColor: string | undefined): string {
+    if (daySelected || dayIsToday) return COLORS.selectedFg
+    if (!calendarColor) return COLORS.eventDot
+    if (calendarColor.toLowerCase() === COLORS.bg.toLowerCase()) return COLORS.eventDot
+    return calendarColor
   }
 
   private getCurrentRangeForView(): DateRange {
@@ -209,7 +233,7 @@ class GoogleCalendarTUI {
 
   private getLayoutConfig(): LayoutConfig {
     const terminalWidth = Math.max(80, process.stdout.columns || 120)
-    let showSidebar = terminalWidth >= 104
+    let showSidebar = this.sidebarEnabled && terminalWidth >= 104
     let sidebarWidth = showSidebar ? this.getSidebarWidth(terminalWidth) : 0
     let visibleDayCount = this.calculateVisibleDayCount(terminalWidth, sidebarWidth)
 
@@ -270,14 +294,19 @@ class GoogleCalendarTUI {
 
   private buildCommandHint(layout: LayoutConfig): string {
     const full =
-      "keys: d/w/m view  <- -> day  up/down week  h/l month  c calendars  t today  r refresh  enter details  ? help  q quit"
-    const compact = "keys: d/w/m <- -> up/down h/l c t r ? q"
+      "keys: d/w/m view  <- -> day  up/down week  h/l month  c calendars  s sidebar  t today  r refresh  enter details  ? help  q quit"
+    const compact = "keys: d/w/m <- -> up/down h/l c s t r ? q"
     return this.truncate(layout.terminalWidth >= 132 ? full : compact, layout.terminalWidth - 4)
   }
 
   private buildCommandSubHint(layout: LayoutConfig): string {
-    const sidebarState = layout.showSidebar ? "sidebar:on" : "sidebar:hidden (narrow terminal)"
-    return this.truncate(`calendar toggle: c   detailed command list: ?   ${sidebarState}`, layout.terminalWidth - 4)
+    let sidebarState = "sidebar:off (toggle with s)"
+    if (layout.showSidebar) {
+      sidebarState = "sidebar:on"
+    } else if (this.sidebarEnabled) {
+      sidebarState = "sidebar:hidden (narrow terminal)"
+    }
+    return this.truncate(`calendar toggle: c   sidebar toggle: s   detailed command list: ?   ${sidebarState}`, layout.terminalWidth - 4)
   }
 
   private createLayout() {
@@ -473,10 +502,13 @@ class GoogleCalendarTUI {
         const weekend = getDay(day) === 0 || getDay(day) === 6
         const hourEvents = this.getEventsForHour(day, hour)
         const firstEvent = hourEvents[0]
-        const eventColor = firstEvent
-          ? this.calendars.find(calendar => calendar.id === firstEvent.calendarId)?.color || COLORS.eventDot
-          : COLORS.fg
-        const eventText = firstEvent ? this.truncate(firstEvent.title, 14) : ""
+        const calendarColor = firstEvent
+          ? this.calendars.find(calendar => calendar.id === firstEvent.calendarId)?.color
+          : undefined
+        const eventColor = this.getGridEventColor(selected, today, calendarColor)
+        const eventText = firstEvent
+          ? this.truncate(`• ${firstEvent.title}${hourEvents.length > 1 ? ` +${hourEvents.length - 1}` : ""}`, 16)
+          : ""
 
         const dayCell = new BoxRenderable(this.renderer, {
           id: `time-grid-day-cell-${hour}-${dayIndex}`,
@@ -509,7 +541,7 @@ class GoogleCalendarTUI {
     })
 
     const currentHour = new Date().getHours()
-    const visibleStartHour = HOURS[0] ?? 6
+    const visibleStartHour = HOURS[0] ?? 0
     const hourOffset = Math.max(0, currentHour - visibleStartHour - 1)
     setTimeout(() => {
       hoursScroll.scrollTo({ x: 0, y: hourOffset * 2 })
@@ -863,6 +895,9 @@ class GoogleCalendarTUI {
       case "c":
         this.showCalendarSelector()
         return
+      case "s":
+        await this.toggleSidebar()
+        return
       case "slash":
         if (key.shift) this.showHelpOverlay()
         return
@@ -906,6 +941,11 @@ class GoogleCalendarTUI {
       return
     }
     await this.refreshCalendar(true)
+  }
+
+  private async toggleSidebar() {
+    this.sidebarEnabled = !this.sidebarEnabled
+    await this.refreshCalendar()
   }
 
   private showHelpOverlay() {
@@ -955,6 +995,7 @@ class GoogleCalendarTUI {
       "Today: t",
       "Refresh events: r",
       "Toggle calendars: c",
+      "Toggle sidebar: s",
       "Day detail dump: enter",
       "Quit: q",
       "Close this help: ?, esc, or enter",

@@ -10,7 +10,7 @@ A beautiful terminal-based Google Calendar interface built with [OpenTUI](https:
 - 📐 Responsive day columns (auto include/exclude days by terminal width)
 - 🕐 Time column always shown on the left in day/week views
 - ⌨️ Built-in command hints in header plus full keyboard help modal (`?`)
-- 📊 Side panel shows events for selected day (auto hides on narrow widths)
+- 📊 Side panel shows events for selected day (toggle with `s`, auto hides on narrow widths)
 - 🌐 Google Calendar API integration (optional)
 - 🎨 Color-coded events per calendar
 - ⚡ Resize-aware terminal UI
@@ -33,6 +33,8 @@ bun install
 ```bash
 bun run start
 ```
+
+On first launch, LazyCal starts immediately with sample events if Google credentials are missing. No setup script is required for this sample-data mode.
 
 ### Connect to Google Calendar
 
@@ -59,6 +61,7 @@ To use real Google Calendar data:
    ```bash
    bash setup-google-calendar.sh
    ```
+   The setup script is optional; it only helps place credential files in the expected path.
 
 4. **Run the app:**
    ```bash
@@ -78,6 +81,7 @@ To use real Google Calendar data:
 | `h` / `l` | Previous / next month |
 | `t` | Go to today |
 | `c` | Toggle calendars selector |
+| `s` | Toggle sidebar on/off |
 | `r` | Refresh events from Google Calendar |
 | `?` | Open keyboard help modal |
 | `Enter` | View selected day details (logs to console) |
