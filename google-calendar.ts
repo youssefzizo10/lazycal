@@ -33,6 +33,9 @@ export interface CalendarEvent {
   id: string
   title: string
   date: Date
+  start: Date
+  end: Date | null
+  isAllDay: boolean
   time?: string
   description?: string
   location?: string
@@ -214,15 +217,21 @@ export class GoogleCalendarClient {
         const events = response.data.items || []
         
         events.forEach(event => {
-          const start = event.start?.dateTime || event.start?.date
-          const eventDate = start ? new Date(start) : new Date()
-          
+          const startRaw = event.start?.dateTime || event.start?.date
+          const endRaw = event.end?.dateTime || event.end?.date
+          const startDate = startRaw ? new Date(startRaw) : new Date()
+          const endDate = endRaw ? new Date(endRaw) : null
+          const isAllDay = !event.start?.dateTime
+
           allEvents.push({
             id: event.id || "",
             title: event.summary || "(No title)",
-            date: eventDate,
+            date: startDate,
+            start: startDate,
+            end: endDate,
+            isAllDay,
             time: event.start?.dateTime 
-              ? this.formatTime(eventDate)
+              ? this.formatTime(startDate)
               : undefined,
             description: event.description || undefined,
             location: event.location || undefined,
@@ -291,11 +300,16 @@ export function generateSampleEvents(): CalendarEvent[] {
       // Random hour between 9 and 17
       const hour = 9 + Math.floor(Math.random() * 8)
       date.setHours(hour, 0, 0, 0)
+      const end = new Date(date)
+      end.setMinutes(end.getMinutes() + (Math.random() > 0.5 ? 30 : 60))
       
       events.push({
         id: `event-${i}`,
         title: titles[Math.floor(Math.random() * titles.length)],
         date: date,
+        start: date,
+        end,
+        isAllDay: false,
         time: `${hour.toString().padStart(2, "0")}:00`,
         description: "Sample event description",
       })

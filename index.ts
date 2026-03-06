@@ -33,6 +33,7 @@ import { GoogleCalendarClient, generateSampleEvents, type CalendarEvent } from "
 const HOURS = Array.from({ length: 24 }, (_, i) => i)
 const TIME_COLUMN_WIDTH = 7
 const TIME_GRID_ROW_HEIGHT = 3
+const MONTH_CELL_HEIGHT = 6
 const CONFIG_DIR = join(homedir(), ".config", "lazycal")
 const CREDENTIALS_PATH = join(CONFIG_DIR, "credentials.json")
 const UI_STATE_PATH = join(CONFIG_DIR, "ui-state.json")
@@ -494,34 +495,57 @@ class GoogleCalendarTUI {
     return this.events.filter(event => isSameDay(event.date, date))
   }
 
-  private parseEventHour(timeValue: string): number | null {
-    const normalized = timeValue.replace(/\u202F/g, " ").trim()
-    const match = normalized.match(/^(\d{1,2})(?::(\d{2}))?(?:\s*([AP]M))?$/i)
-    if (!match) return null
+  private getEventStartHour(event: CalendarEvent): number | null {
+    if (event.isAllDay) return null
+    return event.start.getHours()
+  }
 
-    let hour = Number.parseInt(match[1] || "", 10)
-    if (!Number.isFinite(hour)) return null
+  private getEventMinutesWithinDate(event: CalendarEvent, date: Date): { start: number; end: number } | null {
+    if (event.isAllDay || !isSameDay(event.date, date)) return null
 
-    const meridiem = (match[3] || "").toUpperCase()
-    if (meridiem === "PM" && hour < 12) hour += 12
-    if (meridiem === "AM" && hour === 12) hour = 0
-    if (hour < 0 || hour > 23) return null
+    const start = event.start.getHours() * 60 + event.start.getMinutes()
+    const rawEnd = event.end ?? event.start
+    const end = rawEnd.getHours() * 60 + rawEnd.getMinutes()
+    const effectiveEnd = end > start ? end : Math.min(24 * 60, start + 30)
 
-    return hour
+    return { start, end: effectiveEnd }
   }
 
   private getEventsForHour(date: Date, hour: number): CalendarEvent[] {
     return this.events.filter(event => {
-      if (!isSameDay(event.date, date) || !event.time) return false
-      const eventHour = this.parseEventHour(event.time)
-      return eventHour !== null && eventHour === hour
+      const minutes = this.getEventMinutesWithinDate(event, date)
+      if (!minutes) return false
+
+      const hourStart = hour * 60
+      const hourEnd = hourStart + 60
+      return minutes.start < hourEnd && minutes.end > hourStart
     })
+  }
+
+  private getEventsForHourHalf(date: Date, hour: number, half: 0 | 1): CalendarEvent[] {
+    const halfStart = hour * 60 + half * 30
+    const halfEnd = halfStart + 30
+
+    return this.events.filter(event => {
+      const minutes = this.getEventMinutesWithinDate(event, date)
+      if (!minutes) return false
+      return minutes.start < halfEnd && minutes.end > halfStart
+    })
+  }
+
+  private eventStartsInHourHalf(event: CalendarEvent, date: Date, hour: number, half: 0 | 1): boolean {
+    const minutes = this.getEventMinutesWithinDate(event, date)
+    if (!minutes) return false
+
+    const halfStart = hour * 60 + half * 30
+    const halfEnd = halfStart + 30
+    return minutes.start >= halfStart && minutes.start < halfEnd
   }
 
   private getTimedEventHoursForDates(dates: Date[]): number[] {
     return dates.flatMap(date =>
       this.getEventsForDate(date)
-        .map(event => (event.time ? this.parseEventHour(event.time) : null))
+        .map(event => this.getEventStartHour(event))
         .filter((hour): hour is number => hour !== null)
     )
   }
@@ -568,13 +592,15 @@ class GoogleCalendarTUI {
     this.weekStart = startOfWeek(this.selectedDate, { weekStartsOn: 0 })
 
     if (dateChanged) {
-      if (this.viewMode !== "month") {
-        this.pendingTimeGridScrollTop = this.timeGridScrollBox?.scrollTop ?? this.pendingTimeGridScrollTop
-      }
-      await this.refreshCalendar()
+      await this.refreshCalendar(false, true)
     } else {
       this.updateEventsList()
       this.renderer.requestRender()
+    }
+
+    if (events.length > 1) {
+      this.showEventList(events, date)
+      return
     }
 
     if (clickedIntoEvent) {
@@ -607,6 +633,47 @@ class GoogleCalendarTUI {
     const dayColumnsWidth = Math.max(8, gridWidth - TIME_COLUMN_WIDTH - gapWidth)
     const perDayWidth = Math.max(8, Math.floor(dayColumnsWidth / Math.max(1, visibleDayCount)))
     return Math.max(8, perDayWidth - 2)
+  }
+
+  private formatOverflowLabel(count: number): string {
+    return `+${count} more`
+  }
+
+  private fitLabel(text: string, maxLength: number): string {
+    if (maxLength <= 0) return ""
+
+    const normalized = text.replace(/\s+/g, " ").trim()
+    if (normalized.length <= maxLength) return normalized
+    if (maxLength <= 3) return normalized.slice(0, maxLength)
+
+    return `${normalized.slice(0, maxLength - 3).trimEnd()}...`
+  }
+
+  private getTimeGridEventLabel(events: CalendarEvent[], maxLabelLength: number): string {
+    const firstEvent = events[0]
+    if (!firstEvent) return ""
+
+    return this.fitLabel(`• ${firstEvent.title}`, maxLabelLength)
+  }
+
+  private getMonthGridLabelMaxLength(layout: LayoutConfig): number {
+    const gridWidth = Math.max(20, layout.terminalWidth - 2)
+    const gapWidth = layout.visibleDayCount
+    const dayColumnsWidth = Math.max(8, gridWidth - gapWidth)
+    const perDayWidth = Math.max(8, Math.floor(dayColumnsWidth / Math.max(1, layout.visibleDayCount)))
+    return Math.max(6, perDayWidth - 2)
+  }
+
+  private getSidebarTextMaxLength(sidebarWidth: number): number {
+    return Math.max(14, sidebarWidth - 6)
+  }
+
+  private formatEventTimeLabel(event: CalendarEvent): string {
+    if (event.isAllDay) return "All day"
+
+    const start = format(event.start, "HH:mm")
+    const end = event.end ? format(event.end, "HH:mm") : null
+    return end && end !== start ? `${start}-${end}` : start
   }
 
   private getCurrentRangeForView(): DateRange {
@@ -929,12 +996,7 @@ class GoogleCalendarTUI {
           ? this.calendars.find(calendar => calendar.id === firstEvent.calendarId)?.color
           : undefined
         const eventColor = this.getGridEventColor(selected, today, calendarColor)
-        const eventText = firstEvent
-          ? this.truncate(
-              `• ${firstEvent.title}${hourEvents.length > 1 ? ` +${hourEvents.length - 1}` : ""}`,
-              maxEventLabelLength
-            )
-          : ""
+        const eventText = this.getTimeGridEventLabel(hourEvents, maxEventLabelLength)
 
         const dayCell = new BoxRenderable(this.renderer, {
           id: `time-grid-day-cell-${hour}-${dayIndex}`,
@@ -944,7 +1006,7 @@ class GoogleCalendarTUI {
           backgroundColor: selected ? this.colors.selectedBg : today ? this.colors.todayBg : weekend ? this.colors.weekendBg : this.colors.bg,
           border: true,
           borderStyle: "single",
-          borderColor: selected ? this.colors.selectedFg : this.colors.border,
+          borderColor: selected ? this.colors.selectedFg : today ? this.colors.todayFg : this.colors.border,
           paddingLeft: 0,
           paddingRight: 0,
           overflow: "hidden",
@@ -959,6 +1021,7 @@ class GoogleCalendarTUI {
             content: eventText,
             fg: eventColor,
             marginLeft: 0,
+            marginTop: 0,
           })
           dayCell.add(eventLabel)
         }
@@ -972,13 +1035,15 @@ class GoogleCalendarTUI {
     const scrollTop = this.pendingTimeGridScrollTop ?? this.getAutoTimeGridScrollTop()
     this.pendingTimeGridScrollTop = null
     setTimeout(() => {
-      hoursScroll.scrollTo({ x: 0, y: scrollTop })
-    }, 100)
+      hoursScroll.scrollTop = scrollTop
+      this.renderer.requestRender()
+    }, 0)
   }
 
   private createMonthGrid(container: BoxRenderable, layout: LayoutConfig) {
     this.timeGridScrollBox = null
     const visibleDayIndices = this.getVisibleMonthDayIndices(layout)
+    const monthLabelLength = this.getMonthGridLabelMaxLength(layout)
 
     const weekdayHeader = new BoxRenderable(this.renderer, {
       id: "month-weekday-header",
@@ -1034,7 +1099,7 @@ class GoogleCalendarTUI {
     for (let row = 0; row < rows; row++) {
       const weekRow = new BoxRenderable(this.renderer, {
         id: `month-week-row-${row}`,
-        height: 5,
+        height: MONTH_CELL_HEIGHT,
         flexShrink: 0,
         flexDirection: "row",
         gap: 1,
@@ -1046,13 +1111,15 @@ class GoogleCalendarTUI {
         const inMonth = isSameMonth(day, this.currentDate)
         const selected = isSameDay(day, this.selectedDate)
         const today = isToday(day)
-        const dayEvents = this.getEventsForDate(day).slice(0, 2)
+        const dayEvents = this.getEventsForDate(day)
+        const visibleDayEvents = dayEvents.slice(0, 2)
+        const hiddenEventCount = Math.max(0, dayEvents.length - visibleDayEvents.length)
 
         const cell = new BoxRenderable(this.renderer, {
           id: `month-day-cell-${row}-${index}`,
           flexGrow: 1,
           flexBasis: 0,
-          height: 5,
+          height: MONTH_CELL_HEIGHT,
           border: true,
           borderStyle: selected || today ? "double" : "single",
           borderColor: selected ? this.colors.selectedFg : today ? this.colors.todayFg : this.colors.border,
@@ -1072,16 +1139,26 @@ class GoogleCalendarTUI {
         })
         cell.add(numberText)
 
-        dayEvents.forEach((event, eventIndex) => {
+        visibleDayEvents.forEach((event, eventIndex) => {
           const color = this.calendars.find(calendar => calendar.id === event.calendarId)?.color || this.colors.eventDot
           const eventLine = new TextRenderable(this.renderer, {
             id: `month-day-event-${row}-${index}-${eventIndex}`,
-            content: this.truncate(event.title, 12),
+            content: this.fitLabel(event.title, monthLabelLength),
             fg: color,
             marginTop: 0,
           })
           cell.add(eventLine)
         })
+
+        if (hiddenEventCount > 0) {
+          const overflowLine = new TextRenderable(this.renderer, {
+            id: `month-day-overflow-${row}-${index}`,
+            content: this.fitLabel(this.formatOverflowLabel(hiddenEventCount), monthLabelLength),
+            fg: this.colors.otherMonthFg,
+            marginTop: 0,
+          })
+          cell.add(overflowLine)
+        }
 
         weekRow.add(cell)
       })
@@ -1091,6 +1168,7 @@ class GoogleCalendarTUI {
   }
 
   private createEventsSidebar(contentBox: BoxRenderable, sidebarWidth: number) {
+    const sidebarTextMaxLength = this.getSidebarTextMaxLength(sidebarWidth)
     this.eventsBox = new BoxRenderable(this.renderer, {
       id: "events-box",
       width: sidebarWidth,
@@ -1112,7 +1190,7 @@ class GoogleCalendarTUI {
     })
     this.eventsBox.add(selectedDateHeader)
 
-    const allDayEvents = this.getEventsForDate(this.selectedDate).filter(event => !event.time)
+    const allDayEvents = this.getEventsForDate(this.selectedDate).filter(event => event.isAllDay)
     if (allDayEvents.length > 0) {
       const allDayHeader = new TextRenderable(this.renderer, {
         id: "allday-header",
@@ -1137,7 +1215,7 @@ class GoogleCalendarTUI {
         })
         const eventTitle = new TextRenderable(this.renderer, {
           id: `allday-title-${index}`,
-          content: this.truncate(event.title, 28),
+          content: this.fitLabel(event.title, sidebarTextMaxLength),
           fg: this.colors.fg,
         })
         eventBox.add(eventTitle)
@@ -1170,12 +1248,13 @@ class GoogleCalendarTUI {
 
   private updateEventsList() {
     if (!this.eventsScrollBox || !this.eventsBox) return
+    const sidebarTextMaxLength = this.getSidebarTextMaxLength(this.getLayoutConfig().sidebarWidth)
 
     this.eventsScrollBox.getChildren().forEach(child => this.eventsScrollBox?.remove(child.id))
 
     const dayEvents = this.getEventsForDate(this.selectedDate)
-      .filter(event => Boolean(event.time))
-      .sort((a, b) => (a.time || "").localeCompare(b.time || ""))
+      .filter(event => !event.isAllDay)
+      .sort((a, b) => a.start.getTime() - b.start.getTime())
 
     if (dayEvents.length === 0) {
       const emptyText = new TextRenderable(this.renderer, {
@@ -1203,14 +1282,14 @@ class GoogleCalendarTUI {
 
         const timeText = new TextRenderable(this.renderer, {
           id: `timed-event-time-${index}`,
-          content: event.time || "",
+          content: this.formatEventTimeLabel(event),
           fg: color,
         })
         eventBox.add(timeText)
 
         const titleText = new TextRenderable(this.renderer, {
           id: `timed-event-title-${index}`,
-          content: this.truncate(event.title, 30),
+          content: this.fitLabel(event.title, sidebarTextMaxLength),
           fg: this.colors.fg,
           marginTop: 0,
         })
@@ -1219,7 +1298,7 @@ class GoogleCalendarTUI {
         if (event.location) {
           const locationText = new TextRenderable(this.renderer, {
             id: `timed-event-location-${index}`,
-            content: this.truncate(`@ ${event.location}`, 30),
+            content: this.fitLabel(`@ ${event.location}`, sidebarTextMaxLength),
             fg: this.colors.otherMonthFg,
             marginTop: 0,
           })
@@ -1237,10 +1316,7 @@ class GoogleCalendarTUI {
   }
 
   private truncate(text: string, maxLength: number): string {
-    if (maxLength <= 0) return ""
-    if (text.length <= maxLength) return text
-    if (maxLength <= 1) return text.slice(0, maxLength)
-    return `${text.slice(0, maxLength - 1)}~`
+    return this.fitLabel(text, maxLength)
   }
 
   private async refreshCalendar(forceFetch = false, preserveTimeGridScroll = false) {
@@ -1264,7 +1340,7 @@ class GoogleCalendarTUI {
     this.viewMode = mode
     this.currentDate = this.selectedDate
     this.weekStart = startOfWeek(this.selectedDate, { weekStartsOn: 0 })
-    await this.refreshCalendar()
+    await this.refreshCalendar(false, true)
   }
 
   private isModalOpen(): boolean {
@@ -1353,21 +1429,21 @@ class GoogleCalendarTUI {
     this.selectedDate = addDays(this.selectedDate, days)
     this.currentDate = this.selectedDate
     this.weekStart = startOfWeek(this.selectedDate, { weekStartsOn: 0 })
-    await this.refreshCalendar()
+    await this.refreshCalendar(false, true)
   }
 
   private async navigateWeek(weeks: number) {
     this.selectedDate = addWeeks(this.selectedDate, weeks)
     this.currentDate = this.selectedDate
     this.weekStart = startOfWeek(this.selectedDate, { weekStartsOn: 0 })
-    await this.refreshCalendar()
+    await this.refreshCalendar(false, true)
   }
 
   private async navigateMonth(direction: number) {
     this.selectedDate = direction > 0 ? addMonths(this.selectedDate, 1) : subMonths(this.selectedDate, 1)
     this.currentDate = this.selectedDate
     this.weekStart = startOfWeek(this.selectedDate, { weekStartsOn: 0 })
-    await this.refreshCalendar()
+    await this.refreshCalendar(false, true)
   }
 
   private async goToToday() {
@@ -1375,7 +1451,7 @@ class GoogleCalendarTUI {
     this.currentDate = today
     this.selectedDate = today
     this.weekStart = startOfWeek(today, { weekStartsOn: 0 })
-    await this.refreshCalendar()
+    await this.refreshCalendar(false, true)
   }
 
   private async refreshEvents() {
@@ -1517,8 +1593,8 @@ class GoogleCalendarTUI {
     dialog.add(title)
 
     const details: string[] = []
-    details.push(event.time ? `Time: ${event.time}` : "Time: All day")
-    details.push(`Date: ${format(event.date, "EEEE, MMM d, yyyy")}`)
+    details.push(`Time: ${this.formatEventTimeLabel(event)}`)
+    details.push(`Date: ${format(event.start, "EEEE, MMM d, yyyy")}`)
     if (calendarName) details.push(`Calendar: ${this.truncate(calendarName, 56)}`)
     if (event.location) details.push(`Location: ${this.truncate(event.location, 56)}`)
     if (event.description) details.push(`Notes: ${this.truncate(event.description, 58)}`)
@@ -1559,6 +1635,152 @@ class GoogleCalendarTUI {
     }
 
     this.renderer.keyInput.on("keypress", closeHandler)
+    this.renderer.requestRender()
+  }
+
+  private showEventList(events: CalendarEvent[], date: Date) {
+    if (this.isModalOpen()) return
+
+    const sortedEvents = [...events].sort((a, b) => a.start.getTime() - b.start.getTime())
+
+    const overlay = new BoxRenderable(this.renderer, {
+      id: "event-overlay",
+      width: "100%",
+      height: "100%",
+      backgroundColor: this.colors.overlayBg,
+      position: "absolute",
+      top: 0,
+      left: 0,
+      zIndex: 100,
+      justifyContent: "center",
+      alignItems: "center",
+    })
+    this.renderer.root.add(overlay)
+
+    const dialog = new BoxRenderable(this.renderer, {
+      id: "event-list-dialog",
+      width: 72,
+      height: "auto",
+      flexDirection: "column",
+      backgroundColor: this.colors.headerBg,
+      border: true,
+      borderStyle: "rounded",
+      borderColor: this.colors.border,
+      padding: 2,
+    })
+    overlay.add(dialog)
+
+    const title = new TextRenderable(this.renderer, {
+      id: "event-list-title",
+      content: this.truncate(`${format(date, "EEE, MMM d")} - ${sortedEvents.length} events`, 64),
+      fg: this.colors.headerFg,
+      alignSelf: "center",
+      marginBottom: 1,
+    })
+    dialog.add(title)
+
+    const list = new BoxRenderable(this.renderer, {
+      id: "event-list-items",
+      flexDirection: "column",
+      gap: 0,
+    })
+    dialog.add(list)
+
+    let selectedIndex = 0
+
+    const openEventAtIndex = (index: number) => {
+      const target = sortedEvents[index]
+      close()
+      if (target) this.showEventDetails(target)
+    }
+
+    const renderItems = () => {
+      list.getChildren().forEach(child => list.remove(child.id))
+
+      sortedEvents.forEach((event, index) => {
+        const selected = index === selectedIndex
+        const color = this.calendars.find(calendar => calendar.id === event.calendarId)?.color || this.colors.eventDot
+        const item = new BoxRenderable(this.renderer, {
+          id: `event-list-item-${index}`,
+          width: "100%",
+          backgroundColor: selected ? this.colors.selectedBg : "transparent",
+          border: true,
+          borderStyle: "single",
+          borderColor: selected ? this.colors.selectedFg : color,
+          paddingLeft: 1,
+          paddingRight: 1,
+          marginBottom: 1,
+          onMouseDown: () => {
+            selectedIndex = index
+            openEventAtIndex(index)
+          },
+        })
+
+        const timeText = new TextRenderable(this.renderer, {
+          id: `event-list-time-${index}`,
+          content: this.formatEventTimeLabel(event),
+          fg: selected ? this.colors.selectedFg : color,
+        })
+        item.add(timeText)
+
+        const eventText = new TextRenderable(this.renderer, {
+          id: `event-list-title-${index}`,
+          content: this.truncate(event.title, 56),
+          fg: selected ? this.colors.selectedFg : this.colors.fg,
+          marginTop: 0,
+        })
+        item.add(eventText)
+
+        list.add(item)
+      })
+    }
+
+    renderItems()
+
+    const hint = new TextRenderable(this.renderer, {
+      id: "event-list-hint",
+      content: "up/down move, enter open, esc cancel",
+      fg: this.colors.otherMonthFg,
+      alignSelf: "center",
+    })
+    dialog.add(hint)
+
+    const close = () => {
+      this.renderer.keyInput.off("keypress", handleKey)
+      overlay.destroyRecursively()
+      this.renderer.requestRender()
+    }
+
+    const openSelected = () => {
+      openEventAtIndex(selectedIndex)
+    }
+
+    const handleKey = (key: KeyEvent) => {
+      if (key.name === "up" || key.name === "k") {
+        selectedIndex = Math.max(0, selectedIndex - 1)
+        renderItems()
+        this.renderer.requestRender()
+        return
+      }
+
+      if (key.name === "down" || key.name === "j") {
+        selectedIndex = Math.min(sortedEvents.length - 1, selectedIndex + 1)
+        renderItems()
+        this.renderer.requestRender()
+        return
+      }
+
+      if (key.name === "return" || key.name === "linefeed") {
+        openSelected()
+        return
+      }
+
+      if (key.name === "escape" || key.name === "q") {
+        close()
+      }
+    }
+
+    this.renderer.keyInput.on("keypress", handleKey)
     this.renderer.requestRender()
   }
 
