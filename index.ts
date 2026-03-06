@@ -3,6 +3,8 @@
 import {
   createCliRenderer,
   BoxRenderable,
+  InputRenderable,
+  InputRenderableEvents,
   ScrollBoxRenderable,
   TextRenderable,
   type KeyEvent,
@@ -232,6 +234,14 @@ interface UiState {
   disabledCalendarIds: string[]
   credentialOnboardingShown?: boolean
   themeName?: ThemeName
+}
+
+interface CreateEventDraft {
+  title: string
+  startTime: string
+  endTime: string
+  location: string
+  description: string
 }
 
 class GoogleCalendarTUI {
@@ -796,8 +806,8 @@ class GoogleCalendarTUI {
   }
 
   private buildCommandHint(layout: LayoutConfig): string {
-    const full = "keys: d/w/m view  left/right day  up/down week  h/l month  p theme  t today  ? help  q quit"
-    const compact = "keys: d/w/m left/right up/down h/l p t ? q"
+    const full = "keys: d/w/m view  left/right day  up/down week  h/l month  t today  ? help  q quit"
+    const compact = "keys: d/w/m left/right up/down h/l t ? q"
     return this.truncate(layout.terminalWidth >= 132 ? full : compact, layout.terminalWidth - 4)
   }
 
@@ -1346,7 +1356,9 @@ class GoogleCalendarTUI {
   private isModalOpen(): boolean {
     return Boolean(
       this.renderer.root.getRenderable("calendar-overlay") ||
+      this.renderer.root.getRenderable("create-event-overlay") ||
       this.renderer.root.getRenderable("help-overlay") ||
+      this.renderer.root.getRenderable("notice-overlay") ||
       this.renderer.root.getRenderable("event-overlay") ||
       this.renderer.root.getRenderable("theme-overlay")
     )
@@ -1404,6 +1416,9 @@ class GoogleCalendarTUI {
         return
       case "t":
         await this.goToToday()
+        return
+      case "n":
+        this.showCreateEventDialog()
         return
       case "p":
         this.showThemeSelector()
@@ -1511,6 +1526,7 @@ class GoogleCalendarTUI {
       "Navigate day: left / right",
       "Navigate week: up / down (or k / j)",
       "Navigate month: h / l",
+      "Create event: n",
       "Theme palette: p",
       "Today: t",
       "Refresh events: r",
@@ -1549,6 +1565,445 @@ class GoogleCalendarTUI {
     }
 
     this.renderer.keyInput.on("keypress", closeHandler)
+    this.renderer.requestRender()
+  }
+
+  private showNoticeDialog(title: string, lines: string[]) {
+    if (this.isModalOpen()) return
+
+    const overlay = new BoxRenderable(this.renderer, {
+      id: "notice-overlay",
+      width: "100%",
+      height: "100%",
+      backgroundColor: this.colors.overlayBg,
+      position: "absolute",
+      top: 0,
+      left: 0,
+      zIndex: 100,
+      justifyContent: "center",
+      alignItems: "center",
+    })
+    this.renderer.root.add(overlay)
+
+    const dialog = new BoxRenderable(this.renderer, {
+      id: "notice-dialog",
+      width: 72,
+      height: "auto",
+      flexDirection: "column",
+      backgroundColor: this.colors.headerBg,
+      border: true,
+      borderStyle: "rounded",
+      borderColor: this.colors.border,
+      padding: 2,
+    })
+    overlay.add(dialog)
+
+    dialog.add(new TextRenderable(this.renderer, {
+      id: "notice-title",
+      content: this.truncate(title, 64),
+      fg: this.colors.headerFg,
+      alignSelf: "center",
+      marginBottom: 1,
+    }))
+
+    lines.forEach((line, index) => {
+      dialog.add(new TextRenderable(this.renderer, {
+        id: `notice-line-${index}`,
+        content: this.truncate(line, 64),
+        fg: this.colors.fg,
+      }))
+    })
+
+    dialog.add(new TextRenderable(this.renderer, {
+      id: "notice-hint",
+      content: "Press esc, enter, or q to close",
+      fg: this.colors.otherMonthFg,
+      marginTop: 1,
+      alignSelf: "center",
+    }))
+
+    const close = () => {
+      this.renderer.keyInput.off("keypress", closeHandler)
+      overlay.destroyRecursively()
+      this.renderer.requestRender()
+    }
+
+    const closeHandler = (key: KeyEvent) => {
+      if (
+        key.name === "escape" ||
+        key.name === "return" ||
+        key.name === "linefeed" ||
+        key.name === "q"
+      ) {
+        close()
+      }
+    }
+
+    this.renderer.keyInput.on("keypress", closeHandler)
+    this.renderer.requestRender()
+  }
+
+  private getCreateEventDefaultTimes() {
+    const start = new Date(this.selectedDate)
+    start.setHours(9, 0, 0, 0)
+
+    const end = new Date(start)
+    end.setMinutes(end.getMinutes() + 30)
+
+    return {
+      startTime: format(start, "HH:mm"),
+      endTime: format(end, "HH:mm"),
+    }
+  }
+
+  private parseTimeInput(value: string): { hours: number; minutes: number } | null {
+    const normalized = value.trim()
+    const match = normalized.match(/^(\d{1,2}):(\d{2})$/)
+    if (!match) return null
+
+    const hours = Number.parseInt(match[1] || "", 10)
+    const minutes = Number.parseInt(match[2] || "", 10)
+    if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return null
+
+    return { hours, minutes }
+  }
+
+  private buildDateWithTime(date: Date, timeValue: string): Date | null {
+    const parsed = this.parseTimeInput(timeValue)
+    if (!parsed) return null
+
+    const result = new Date(date)
+    result.setHours(parsed.hours, parsed.minutes, 0, 0)
+    return result
+  }
+
+  private showCreateEventDialog() {
+    if (this.isModalOpen()) return
+
+    if (!this.isGoogleConnected) {
+      this.showNoticeDialog("Create Event", [
+        "Google Calendar is not connected.",
+        "Add credentials and authenticate to create real events.",
+      ])
+      return
+    }
+
+    const targetCalendar = this.calendars.find(calendar => calendar.enabled)
+    if (!targetCalendar) {
+      this.showNoticeDialog("Create Event", [
+        "No calendar is enabled.",
+        "Open the calendar selector with c and enable a calendar first.",
+      ])
+      return
+    }
+
+    const defaults = this.getCreateEventDefaultTimes()
+    const draft: CreateEventDraft = {
+      title: "",
+      startTime: defaults.startTime,
+      endTime: defaults.endTime,
+      location: "",
+      description: "",
+    }
+
+    const enabledCalendars = this.calendars.filter(calendar => calendar.enabled)
+    let selectedCalendarIndex = Math.max(0, enabledCalendars.findIndex(calendar => calendar.id === targetCalendar.id))
+
+    const overlay = new BoxRenderable(this.renderer, {
+      id: "create-event-overlay",
+      width: "100%",
+      height: "100%",
+      backgroundColor: this.colors.overlayBg,
+      position: "absolute",
+      top: 0,
+      left: 0,
+      zIndex: 100,
+      justifyContent: "center",
+      alignItems: "center",
+    })
+    this.renderer.root.add(overlay)
+
+    const dialog = new BoxRenderable(this.renderer, {
+      id: "create-event-dialog",
+      width: 74,
+      height: "auto",
+      flexDirection: "column",
+      backgroundColor: this.colors.headerBg,
+      border: true,
+      borderStyle: "rounded",
+      borderColor: this.colors.border,
+      padding: 2,
+      gap: 1,
+    })
+    overlay.add(dialog)
+
+    dialog.add(new TextRenderable(this.renderer, {
+      id: "create-event-title",
+      content: "Create Event",
+      fg: this.colors.headerFg,
+      alignSelf: "center",
+    }))
+
+    dialog.add(new TextRenderable(this.renderer, {
+      id: "create-event-date",
+      content: `Date: ${format(this.selectedDate, "EEEE, MMM d, yyyy")}`,
+      fg: this.colors.dayHeaderFg,
+      marginBottom: 1,
+    }))
+
+    const fieldsBox = new BoxRenderable(this.renderer, {
+      id: "create-event-fields",
+      flexDirection: "column",
+      gap: 1,
+    })
+    dialog.add(fieldsBox)
+
+    const calendarRow = new BoxRenderable(this.renderer, {
+      id: "create-event-row-calendar",
+      flexDirection: "column",
+    })
+
+    calendarRow.add(new TextRenderable(this.renderer, {
+      id: "create-event-label-calendar",
+      content: "Calendar",
+      fg: this.colors.fg,
+    }))
+
+    const calendarValueBox = new BoxRenderable(this.renderer, {
+      id: "create-event-calendar-box",
+      width: "100%",
+      border: true,
+      borderStyle: "single",
+      borderColor: this.colors.border,
+      backgroundColor: this.colors.bg,
+      paddingLeft: 1,
+      paddingRight: 1,
+      height: 3,
+      justifyContent: "center",
+    })
+
+    const calendarValueText = new TextRenderable(this.renderer, {
+      id: "create-event-calendar-value",
+      content: "",
+      fg: this.colors.fg,
+    })
+    calendarValueBox.add(calendarValueText)
+    calendarRow.add(calendarValueBox)
+    fieldsBox.add(calendarRow)
+
+    const createField = (id: string, label: string, value: string, placeholder: string, maxLength = 56) => {
+      const row = new BoxRenderable(this.renderer, {
+        id: `create-event-row-${id}`,
+        flexDirection: "column",
+      })
+
+      row.add(new TextRenderable(this.renderer, {
+        id: `create-event-label-${id}`,
+        content: label,
+        fg: this.colors.fg,
+      }))
+
+      const input = new InputRenderable(this.renderer, {
+        id: `create-event-input-${id}`,
+        value,
+        placeholder,
+        maxLength,
+        width: "100%",
+        backgroundColor: this.colors.bg,
+        textColor: this.colors.fg,
+        focusedBackgroundColor: this.colors.selectedBg,
+        focusedTextColor: this.colors.selectedFg,
+        placeholderColor: this.colors.otherMonthFg,
+      })
+
+      row.add(input)
+      fieldsBox.add(row)
+      return input
+    }
+
+    const titleInput = createField("title", "Title", draft.title, "Team sync")
+    const startInput = createField("start", "Start (HH:mm)", draft.startTime, "09:00", 5)
+    const endInput = createField("end", "End (HH:mm)", draft.endTime, "09:30", 5)
+    const locationInput = createField("location", "Location", draft.location, "Conference room", 56)
+    const descriptionInput = createField("description", "Description", draft.description, "Agenda or notes", 56)
+
+    const statusText = new TextRenderable(this.renderer, {
+      id: "create-event-status",
+      content: "tab cycle, up/down calendar, enter create, esc cancel",
+      fg: this.colors.otherMonthFg,
+      marginTop: 1,
+      alignSelf: "center",
+    })
+    dialog.add(statusText)
+
+    const inputs = [titleInput, startInput, endInput, locationInput, descriptionInput]
+    let activeIndex = 0
+    let isSaving = false
+
+    const syncDraft = () => {
+      draft.title = titleInput.value.trim()
+      draft.startTime = startInput.value.trim()
+      draft.endTime = endInput.value.trim()
+      draft.location = locationInput.value.trim()
+      draft.description = descriptionInput.value.trim()
+    }
+
+    const setStatus = (message: string, isError = false) => {
+      statusText.content = this.truncate(message, 66)
+      statusText.fg = isError ? this.colors.offline : this.colors.otherMonthFg
+      this.renderer.requestRender()
+    }
+
+    const renderCalendarSelector = () => {
+      const selectedCalendar = enabledCalendars[selectedCalendarIndex]
+      const calendarFocused = activeIndex === 0
+      calendarValueBox.borderColor = calendarFocused ? this.colors.selectedFg : this.colors.border
+      calendarValueBox.backgroundColor = calendarFocused ? this.colors.selectedBg : this.colors.bg
+      calendarValueText.content = this.truncate(
+        selectedCalendar
+          ? `${selectedCalendar.name} (${selectedCalendarIndex + 1}/${enabledCalendars.length})`
+          : "No enabled calendar",
+        58,
+      )
+      calendarValueText.fg = calendarFocused ? this.colors.selectedFg : this.colors.fg
+    }
+
+    const focusField = (index: number) => {
+      const totalFields = inputs.length + 1
+      activeIndex = ((index % totalFields) + totalFields) % totalFields
+      inputs.forEach(input => input.blur())
+      renderCalendarSelector()
+      if (activeIndex > 0) {
+        inputs[activeIndex - 1]?.focus()
+      }
+      this.renderer.requestRender()
+    }
+
+    const shiftCalendar = (delta: number) => {
+      if (enabledCalendars.length === 0) return
+      selectedCalendarIndex = (selectedCalendarIndex + delta + enabledCalendars.length) % enabledCalendars.length
+      renderCalendarSelector()
+      this.renderer.requestRender()
+    }
+
+    const close = () => {
+      this.renderer.keyInput.off("keypress", handleKey)
+      overlay.destroyRecursively()
+      this.renderer.requestRender()
+    }
+
+    const save = async () => {
+      if (isSaving) return
+
+      syncDraft()
+
+      if (!draft.title) {
+        setStatus("Title is required.", true)
+        focusField(1)
+        return
+      }
+
+      const start = this.buildDateWithTime(this.selectedDate, draft.startTime)
+      if (!start) {
+        setStatus("Start time must use HH:mm.", true)
+        focusField(2)
+        return
+      }
+
+      const end = this.buildDateWithTime(this.selectedDate, draft.endTime)
+      if (!end) {
+        setStatus("End time must use HH:mm.", true)
+        focusField(3)
+        return
+      }
+
+      if (end.getTime() <= start.getTime()) {
+        setStatus("End time must be after start time.", true)
+        focusField(3)
+        return
+      }
+
+      try {
+        isSaving = true
+        setStatus("Saving event...")
+        await this.googleClient.createEvent({
+          calendarId: enabledCalendars[selectedCalendarIndex]?.id || targetCalendar.id,
+          title: draft.title,
+          start,
+          end,
+          location: draft.location || undefined,
+          description: draft.description || undefined,
+        })
+        close()
+        this.loadedRange = null
+        await this.refreshCalendar(true, true)
+      } catch (error) {
+        isSaving = false
+        const message = error instanceof Error ? error.message : "Failed to create event."
+        if (message.startsWith("Re-auth needed.")) {
+          close()
+          this.showNoticeDialog("Create Event", [
+            "Re-auth needed.",
+            "Delete ~/.config/lazycal/token.json, then sign in again.",
+          ])
+          return
+        }
+        setStatus(message, true)
+      }
+    }
+
+    titleInput.on(InputRenderableEvents.INPUT, syncDraft)
+    startInput.on(InputRenderableEvents.INPUT, syncDraft)
+    endInput.on(InputRenderableEvents.INPUT, syncDraft)
+    locationInput.on(InputRenderableEvents.INPUT, syncDraft)
+    descriptionInput.on(InputRenderableEvents.INPUT, syncDraft)
+
+    titleInput.on(InputRenderableEvents.ENTER, () => { void save() })
+    startInput.on(InputRenderableEvents.ENTER, () => { void save() })
+    endInput.on(InputRenderableEvents.ENTER, () => { void save() })
+    locationInput.on(InputRenderableEvents.ENTER, () => { void save() })
+    descriptionInput.on(InputRenderableEvents.ENTER, () => { void save() })
+
+    const handleKey = (key: KeyEvent) => {
+      if (key.name === "escape" || key.name === "q") {
+        close()
+        return
+      }
+
+      if (key.name === "tab" && !key.shift) {
+        focusField(activeIndex + 1)
+        return
+      }
+
+      if (key.name === "tab" && key.shift) {
+        focusField(activeIndex - 1)
+        return
+      }
+
+      if (activeIndex === 0) {
+        if (key.name === "up") {
+          shiftCalendar(-1)
+          return
+        }
+
+        if (key.name === "down") {
+          shiftCalendar(1)
+          return
+        }
+
+        if (key.name === "return" || key.name === "linefeed") {
+          void save()
+        }
+      }
+    }
+
+    this.renderer.keyInput.on("keypress", handleKey)
+    renderCalendarSelector()
+    setTimeout(() => {
+      if (!overlay.isDestroyed) {
+        focusField(0)
+      }
+    }, 0)
     this.renderer.requestRender()
   }
 

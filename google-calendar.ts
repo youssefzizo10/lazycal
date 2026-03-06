@@ -23,7 +23,7 @@ import { startOfWeek, endOfWeek } from "date-fns"
 import * as http from "http"
 import * as url from "url"
 
-const SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
+const SCOPES = ["https://www.googleapis.com/auth/calendar"]
 const CONFIG_DIR = path.join(homedir(), ".config", "lazycal")
 const CREDENTIALS_PATH = path.join(CONFIG_DIR, "credentials.json")
 const TOKEN_PATH = path.join(CONFIG_DIR, "token.json")
@@ -41,6 +41,15 @@ export interface CalendarEvent {
   location?: string
   calendarId?: string
   calendarName?: string
+}
+
+export interface CreateCalendarEventInput {
+  calendarId: string
+  title: string
+  start: Date
+  end: Date
+  location?: string
+  description?: string
 }
 
 export class GoogleCalendarClient {
@@ -129,34 +138,82 @@ export class GoogleCalendarClient {
                 <!DOCTYPE html>
                 <html>
                 <head>
+                  <meta charset="utf-8" />
                   <title>LazyCal - Authorization Success</title>
                   <style>
+                    :root {
+                      --bg: #141414;
+                      --panel: #1c1c1c;
+                      --panel-2: #232323;
+                      --text: #e8e6e3;
+                      --muted: #b8b4ae;
+                      --border: #343434;
+                      --accent: #8da399;
+                    }
                     body {
-                      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                      font-family: "SF Mono", "JetBrains Mono", "Menlo", monospace;
                       display: flex;
                       justify-content: center;
                       align-items: center;
                       height: 100vh;
                       margin: 0;
-                      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                      color: white;
+                      background:
+                        radial-gradient(circle at top, rgba(141, 163, 153, 0.12), transparent 38%),
+                        linear-gradient(180deg, #171717 0%, #101010 100%);
+                      color: var(--text);
                     }
                     .container {
+                      width: min(540px, calc(100vw - 48px));
                       text-align: center;
-                      padding: 2rem;
-                      background: rgba(255,255,255,0.1);
-                      border-radius: 1rem;
-                      backdrop-filter: blur(10px);
+                      padding: 32px 28px;
+                      background: linear-gradient(180deg, var(--panel) 0%, var(--panel-2) 100%);
+                      border: 1px solid var(--border);
+                      border-radius: 18px;
+                      box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
                     }
-                    h1 { margin: 0 0 1rem 0; }
-                    p { margin: 0; opacity: 0.9; }
-                    .check { font-size: 4rem; margin-bottom: 1rem; }
+                    .eyebrow {
+                      display: inline-block;
+                      margin-bottom: 16px;
+                      padding: 6px 10px;
+                      border: 1px solid var(--border);
+                      border-radius: 999px;
+                      color: var(--muted);
+                      background: rgba(255, 255, 255, 0.02);
+                      font-size: 12px;
+                      letter-spacing: 0.08em;
+                      text-transform: uppercase;
+                    }
+                    h1 {
+                      margin: 0 0 12px 0;
+                      font-size: 32px;
+                      line-height: 1.1;
+                    }
+                    p {
+                      margin: 0;
+                      color: var(--muted);
+                      font-size: 15px;
+                      line-height: 1.6;
+                    }
+                    .status {
+                      width: 72px;
+                      height: 72px;
+                      margin: 0 auto 18px auto;
+                      border-radius: 16px;
+                      border: 1px solid var(--border);
+                      background: rgba(141, 163, 153, 0.12);
+                      color: var(--accent);
+                      display: grid;
+                      place-items: center;
+                      font-size: 28px;
+                      font-weight: 700;
+                    }
                   </style>
                 </head>
                 <body>
                   <div class="container">
-                    <div class="check">✓</div>
-                    <h1>Authorization Successful!</h1>
+                    <div class="eyebrow">LazyCal</div>
+                    <div class="status">OK</div>
+                    <h1>Authorization complete</h1>
                     <p>You can close this window and return to LazyCal.</p>
                   </div>
                 </body>
@@ -270,6 +327,61 @@ export class GoogleCalendarClient {
     } catch (error) {
       console.error("Error fetching calendars:", error)
       return []
+    }
+  }
+
+  async createEvent(input: CreateCalendarEventInput): Promise<CalendarEvent> {
+    if (!this.calendar) {
+      throw new Error("Calendar not initialized")
+    }
+
+    let response: calendar_v3.Schema$Event
+    try {
+      const insertResponse = await this.calendar.events.insert({
+        calendarId: input.calendarId,
+        requestBody: {
+          summary: input.title,
+          location: input.location || undefined,
+          description: input.description || undefined,
+          start: {
+            dateTime: input.start.toISOString(),
+          },
+          end: {
+            dateTime: input.end.toISOString(),
+          },
+        },
+      })
+      response = insertResponse.data
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (
+        message.includes("insufficient") ||
+        message.includes("permission") ||
+        message.includes("scope")
+      ) {
+        throw new Error("Re-auth needed. Delete ~/.config/lazycal/token.json, then sign in again.")
+      }
+      throw error
+    }
+
+    const createdEvent = response
+    const startRaw = createdEvent.start?.dateTime || createdEvent.start?.date
+    const endRaw = createdEvent.end?.dateTime || createdEvent.end?.date
+    const startDate = startRaw ? new Date(startRaw) : input.start
+    const endDate = endRaw ? new Date(endRaw) : input.end
+    const isAllDay = !createdEvent.start?.dateTime
+
+    return {
+      id: createdEvent.id || "",
+      title: createdEvent.summary || input.title,
+      date: startDate,
+      start: startDate,
+      end: endDate,
+      isAllDay,
+      time: createdEvent.start?.dateTime ? this.formatTime(startDate) : undefined,
+      description: createdEvent.description || input.description || undefined,
+      location: createdEvent.location || input.location || undefined,
+      calendarId: input.calendarId,
     }
   }
 }
